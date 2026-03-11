@@ -129,40 +129,38 @@ func loadFileToBufferAsync(fn string, b *Buffer, updateChan chan<- bool, doneCha
 	scanner.Split(bufio.ScanLines)
 	//set separator, if user does not provide it.
 	var detectLines []string //lines as detect separator data
-	if b.sep == 0 {
-		//read 10 lines to detect separator
-		lineNumber := 10
-		for scanner.Scan() {
-			line := scanner.Text()
-			//skip empty line
-			if line == "\n" {
-				continue
-			}
-			//ignore first n lines
-			if args.SkipNum > 0 {
-				args.SkipNum--
-				continue
-			}
-			//ignore line with specified prefix
-			if skipLine(line, args.SkipSymbol) {
-				continue
-			}
-			detectLines = append(detectLines, line)
-			if len(detectLines) >= lineNumber {
-				break
-			}
+	lineNumber := 10
+	for scanner.Scan() {
+		line := scanner.Text()
+		//skip empty line
+		if line == "\n" {
+			continue
 		}
-		//if the suffix of file name is ".csv", set separator to ",".
-		//if the suffix of file name is "tsv", set separator to "\t".
+		//ignore first n lines
+		if args.SkipNum > 0 {
+			args.SkipNum--
+			continue
+		}
+		//ignore line with specified prefix
+		if skipLine(line, args.SkipSymbol) {
+			continue
+		}
+		detectLines = append(detectLines, line)
+		if len(detectLines) >= lineNumber {
+			break
+		}
+	}
+	if b.sep == 0 {
+		sd := sepDetecor{}
+		b.sep = sd.sepDetect(detectLines)
+	}
+	// Fall back to extension-based detection if content-based detection failed
+	if b.sep == 0 {
 		if strings.HasSuffix(fn, ".csv") {
 			b.sep = ','
 		} else if strings.HasSuffix(fn, ".tsv") {
 			b.sep = '\t'
-		} else {
-			sd := sepDetecor{}
-			b.sep = sd.sepDetect(detectLines)
 		}
-
 	}
 	//check final separator
 	if b.sep == 0 {
@@ -344,40 +342,38 @@ func loadFileToBuffer(fn string, b *Buffer) error {
 	scanner.Split(bufio.ScanLines)
 	//set separator, if user does not provide it.
 	var detectLines []string //lines as detect separator data
-	if b.sep == 0 {
-		//read 10 lines to detect separator
-		lineNumber := 10
-		for scanner.Scan() {
-			line := scanner.Text()
-			//skip empty line
-			if line == "\n" {
-				continue
-			}
-			//ignore first n lines
-			if args.SkipNum > 0 {
-				args.SkipNum--
-				continue
-			}
-			//ignore line with specified prefix
-			if skipLine(line, args.SkipSymbol) {
-				continue
-			}
-			detectLines = append(detectLines, line)
-			if len(detectLines) >= lineNumber {
-				break
-			}
+	lineNumber := 10
+	for scanner.Scan() {
+		line := scanner.Text()
+		//skip empty line
+		if line == "\n" {
+			continue
 		}
-		//if the suffix of file name is ".csv", set separator to ",".
-		//if the suffix of file name is "tsv", set separator to "\t".
+		//ignore first n lines
+		if args.SkipNum > 0 {
+			args.SkipNum--
+			continue
+		}
+		//ignore line with specified prefix
+		if skipLine(line, args.SkipSymbol) {
+			continue
+		}
+		detectLines = append(detectLines, line)
+		if len(detectLines) >= lineNumber {
+			break
+		}
+	}
+	if b.sep == 0 {
+		sd := sepDetecor{}
+		b.sep = sd.sepDetect(detectLines)
+	}
+	// Fall back to extension-based detection if content-based detection failed
+	if b.sep == 0 {
 		if strings.HasSuffix(fn, ".csv") {
 			b.sep = ','
 		} else if strings.HasSuffix(fn, ".tsv") {
 			b.sep = '\t'
-		} else {
-			sd := sepDetecor{}
-			b.sep = sd.sepDetect(detectLines)
 		}
-
 	}
 	//check final separator
 	if b.sep == 0 {
@@ -457,30 +453,29 @@ func loadPipeToBufferAsync(stdin io.Reader, b *Buffer, updateChan chan<- bool, d
 	const maxScanTokenSize = 1024 * 1024
 	buf := make([]byte, maxScanTokenSize)
 	scanner.Buffer(buf, maxScanTokenSize)
-	//read 10 lines to detect separator
 	lineNumber := 10
 	var detectLines []string //lines as detect separator data
-	if b.sep == 0 {
-		for scanner.Scan() {
-			line := scanner.Text()
-			//skip empty line
-			if line == "\n" {
-				continue
-			}
-			//ignore first n lines
-			if args.SkipNum > 0 {
-				args.SkipNum--
-				continue
-			}
-			//ignore line with specified prefix
-			if skipLine(line, args.SkipSymbol) {
-				continue
-			}
-			detectLines = append(detectLines, line)
-			if len(detectLines) >= lineNumber {
-				break
-			}
+	for scanner.Scan() {
+		line := scanner.Text()
+		//skip empty line
+		if line == "\n" {
+			continue
 		}
+		//ignore first n lines
+		if args.SkipNum > 0 {
+			args.SkipNum--
+			continue
+		}
+		//ignore line with specified prefix
+		if skipLine(line, args.SkipSymbol) {
+			continue
+		}
+		detectLines = append(detectLines, line)
+		if len(detectLines) >= lineNumber {
+			break
+		}
+	}
+	if b.sep == 0 {
 		sd := sepDetecor{}
 		b.sep = sd.sepDetect(detectLines)
 	}
@@ -643,30 +638,29 @@ func loadPipeToBuffer(stdin io.Reader, b *Buffer) error {
 	const maxScanTokenSize = 1024 * 1024
 	buf := make([]byte, maxScanTokenSize)
 	scanner.Buffer(buf, maxScanTokenSize)
-	//read 10 lines to detect separator
 	lineNumber := 10
 	var detectLines []string //lines as detect separator data
-	if b.sep == 0 {
-		for scanner.Scan() {
-			line := scanner.Text()
-			//skip empty line
-			if line == "\n" {
-				continue
-			}
-			//ignore first n lines
-			if args.SkipNum > 0 {
-				args.SkipNum--
-				continue
-			}
-			//ignore line with specified prefix
-			if skipLine(line, args.SkipSymbol) {
-				continue
-			}
-			detectLines = append(detectLines, line)
-			if len(detectLines) >= lineNumber {
-				break
-			}
+	for scanner.Scan() {
+		line := scanner.Text()
+		//skip empty line
+		if line == "\n" {
+			continue
 		}
+		//ignore first n lines
+		if args.SkipNum > 0 {
+			args.SkipNum--
+			continue
+		}
+		//ignore line with specified prefix
+		if skipLine(line, args.SkipSymbol) {
+			continue
+		}
+		detectLines = append(detectLines, line)
+		if len(detectLines) >= lineNumber {
+			break
+		}
+	}
+	if b.sep == 0 {
 		sd := sepDetecor{}
 		b.sep = sd.sepDetect(detectLines)
 	}
