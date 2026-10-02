@@ -65,10 +65,12 @@ func (p *progressTracker) display() {
 		if percent > 100 {
 			percent = 100
 		}
-		fmt.Printf("\r\033[K📊 Loading: %.1f%% | %d lines | %.0f lines/sec", percent, p.lineCount, linesPerSec)
+		fmt.Printf("\r\033[K%s %5.1f%%  %s lines  %.0f lines/sec",
+			progressBar(percent, progressBarWidth), percent, formatCount(p.lineCount), linesPerSec)
 	} else {
-		// For pipes or when size is unknown
-		fmt.Printf("\r\033[K📊 Loading: %d lines | %.0f lines/sec", p.lineCount, linesPerSec)
+		// A stream or a compressed file: no total, so report the tally only.
+		fmt.Printf("\r\033[K📊 Loading  %s lines  %.0f lines/sec",
+			formatCount(p.lineCount), linesPerSec)
 	}
 }
 
@@ -84,7 +86,7 @@ func (p *progressTracker) finish() {
 	linesPerSec := float64(p.lineCount) / elapsed
 
 	// Clear the progress line and show final summary
-	fmt.Printf("\r\033[K✓ Loaded %d lines in %.2fs (%.0f lines/sec)\n", p.lineCount, elapsed, linesPerSec)
+	fmt.Printf("\r\033[K✓ Loaded %s lines in %.2fs (%.0f lines/sec)\n", formatCount(p.lineCount), elapsed, linesPerSec)
 }
 
 // check a line whether should bu skip, according to prefix
@@ -168,20 +170,41 @@ func lineCSVParse(s string, sep rune) ([]string, error) {
 	return result, err
 }
 
+// hasQuotes reports whether a line needs the full CSV parser.
+func hasQuotes(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '"' {
+			return true
+		}
+	}
+	return false
+}
+
+// splitFieldsInto appends the fields of an unquoted line into block, returning
+// the row and the extended block. Carving rows from a shared block costs a
+// handful of allocations per batch instead of one per row.
+//
+// The row is returned with its capacity equal to its length, so widening it
+// later (when a longer row grows the table) reallocates rather than writing
+// over the next row's storage.
+func splitFieldsInto(s string, sep rune, block []string) (row, out []string) {
+	start := len(block)
+	begin := 0
+	for i := 0; i < len(s); i++ {
+		if rune(s[i]) == sep {
+			block = append(block, s[begin:i])
+			begin = i + 1
+		}
+	}
+	block = append(block, s[begin:])
+	return block[start:len(block):len(block)], block
+}
+
 // Fast CSV parser for simple cases (no quotes, no escaping)
 // Falls back to standard parser if needed
 func lineCSVParseFast(s string, sep rune) ([]string, error) {
-	// Quick check if line contains quotes (needs full parser)
-	hasQuotes := false
-	for i := 0; i < len(s); i++ {
-		if s[i] == '"' {
-			hasQuotes = true
-			break
-		}
-	}
-
 	// Use fast path for simple CSV lines
-	if !hasQuotes {
+	if !hasQuotes(s) {
 		// Count separators to pre-allocate slice
 		sepCount := 0
 		for i := 0; i < len(s); i++ {

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 
@@ -13,6 +12,11 @@ import (
 
 // errNoInput means neither a file argument nor piped input was supplied.
 var errNoInput = errors.New("no input")
+
+const (
+	// progressRefreshInterval is how often the loading readout is repainted.
+	progressRefreshInterval = 20 * time.Millisecond
+)
 
 func main() {
 	initView()
@@ -169,6 +173,8 @@ func loadProgressively(intake Intake, buf *Buffer, piped bool) {
 	if exitIfEmpty(buf, piped) {
 		return
 	}
+	rows, loaded, total, _ := loadProgress.Snapshot()
+	statusMessage = buildLoadingStatus(rows, loaded, total, 0)
 	fatalError(drawUI())
 
 	go refreshWhileLoading(done)
@@ -177,9 +183,10 @@ func loadProgressively(intake Intake, buf *Buffer, piped bool) {
 
 // refreshWhileLoading repaints the table until the load finishes.
 func refreshWhileLoading(done <-chan error) {
-	ticker := time.NewTicker(20 * time.Millisecond)
+	ticker := time.NewTicker(progressRefreshInterval)
 	defer ticker.Stop()
 
+	tick := 0
 	for {
 		select {
 		case err := <-done:
@@ -190,19 +197,17 @@ func refreshWhileLoading(done <-chan error) {
 			}
 			rows, _, _, _ := loadProgress.Snapshot()
 			app.QueueUpdateDraw(func() {
-				drawBuffer(view.Visible(), bufferTable)
 				// Column types are detected as the load finishes, so refresh
 				// the readout rather than leaving the pre-load one on screen.
 				row, col := bufferTable.GetSelection()
 				cursorPosStr = buildCursorPosStr(row, col)
-				updateFooterWithStatus("Loaded " + strconv.Itoa(rows) + " rows")
+				updateFooterWithStatus("Loaded " + formatCount(rows) + " rows")
 			})
 			return
 
 		case <-ticker.C:
+			tick++
 			app.QueueUpdateDraw(func() {
-				drawBuffer(view.Visible(), bufferTable)
-
 				// Keep the cursor on the first row until the user moves it.
 				if !userMovedCursor {
 					row, col := bufferTable.GetSelection()
@@ -211,12 +216,8 @@ func refreshWhileLoading(done <-chan error) {
 					}
 				}
 
-				rows, _, total, _ := loadProgress.Snapshot()
-				if total > 0 {
-					updateFooterWithStatus(fmt.Sprintf("Loading... %.1f%%", loadProgress.GetPercentage()))
-				} else {
-					updateFooterWithStatus("Loading... " + strconv.Itoa(rows) + " rows")
-				}
+				rows, loaded, total, _ := loadProgress.Snapshot()
+				updateFooterWithStatus(buildLoadingStatus(rows, loaded, total, tick))
 			})
 		}
 	}
@@ -253,6 +254,10 @@ func runApp() {
 		return
 	}
 	if err := app.SetRoot(UI, true).SetFocus(UI).Run(); err != nil {
-		fatalError(err)
+		// The screen never came up — there is no terminal, for instance when
+		// output is redirected. Asking tview to stop it would panic inside
+		// tcell on a half-built screen, so report and leave directly.
+		fmt.Fprintf(os.Stderr, "⚠️  Cannot start the terminal UI: %s\n", err)
+		os.Exit(1)
 	}
 }

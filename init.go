@@ -3,7 +3,6 @@ package main
 import (
 	"time"
 
-	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
 
@@ -28,6 +27,7 @@ var (
 
 	userMovedCursor bool      // whether to keep the cursor pinned while loading
 	lastGPress      time.Time // for recognising "gg"
+
 )
 
 // gRepeatWindow is how long the second 'g' of a "gg" may arrive.
@@ -70,14 +70,8 @@ func pressedGTwice() bool {
 	return false
 }
 
-// updateFooterWithStatus updates the footer with a status message
+// updateFooterWithStatus replaces the footer's centre message, leaving the
+// file name and cursor position as they are.
 func updateFooterWithStatus(status string) {
-	statusMessage = status
-	if mainPage != nil {
-		// Update the footer by rebuilding it
-		mainPage.Clear()
-		mainPage.AddText(fileNameStr, false, tview.AlignLeft, tcell.ColorDarkOrange).
-			AddText(status, false, tview.AlignCenter, tcell.ColorDarkOrange).
-			AddText(cursorPosStr, false, tview.AlignRight, tcell.ColorDarkOrange)
-	}
+	drawFooter(fileNameStr, status, cursorPosStr)
 }

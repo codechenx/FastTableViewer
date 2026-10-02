@@ -1,9 +1,12 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -484,5 +487,188 @@ func TestBuffer_HandlesRaggedRows(t *testing.T) {
 		_ = b.getCol(c)
 		_ = b.getColType(c)
 		b.SortBy(c, false)
+	}
+}
+
+// ============================================================
+// Loading progress readout
+// ============================================================
+
+func TestFormatCount(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"0", "0"}, {"7", "7"}, {"999", "999"},
+		{"1000", "1,000"}, {"12345", "12,345"},
+		{"100000", "100,000"}, {"1234567", "1,234,567"},
+	} {
+		n, _ := strconv.Atoi(tc.in)
+		if got := formatCount(n); got != tc.want {
+			t.Errorf("formatCount(%s) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestProgressBar(t *testing.T) {
+	const w = 10
+
+	for _, tc := range []struct {
+		percent float64
+		filled  int
+	}{
+		{0, 0}, {5, 1}, {10, 1}, {50, 5}, {99, 9}, {100, 10},
+		{-20, 0},  // clamped low
+		{150, 10}, // clamped high
+	} {
+		got := progressBar(tc.percent, w)
+		if n := len([]rune(got)); n != w {
+			t.Errorf("progressBar(%v, %d) has %d cells, want %d", tc.percent, w, n, w)
+		}
+		filled := strings.Count(got, "█")
+		if filled != tc.filled {
+			t.Errorf("progressBar(%v, %d) filled %d cells, want %d (%q)",
+				tc.percent, w, filled, tc.filled, got)
+		}
+	}
+
+	if progressBar(50, 0) != "" {
+		t.Error("a zero-width bar should render as empty")
+	}
+}
+
+// Any progress at all must show a sliver, so the bar never looks stalled while
+// rows are arriving.
+func TestProgressBar_ShowsSliverForTinyProgress(t *testing.T) {
+	if got := progressBar(0.01, 20); strings.Count(got, "█") != 1 {
+		t.Errorf("progressBar(0.01, 20) = %q, want exactly one filled cell", got)
+	}
+	if got := progressBar(0, 20); strings.Count(got, "█") != 0 {
+		t.Errorf("progressBar(0, 20) = %q, want no filled cells", got)
+	}
+}
+
+// A source with a known size gets a determinate bar; one without gets a
+// spinner, because no honest percentage exists for a stream or a .gz.
+func TestBuildLoadingStatus(t *testing.T) {
+	determinate := buildLoadingStatus(1500, 50, 200, 0)
+	if !strings.Contains(determinate, "█") {
+		t.Errorf("determinate status %q should contain a bar", determinate)
+	}
+	if !strings.Contains(determinate, "25.0%") {
+		t.Errorf("determinate status %q should report 25.0%%", determinate)
+	}
+	if !strings.Contains(determinate, "1,500 rows") {
+		t.Errorf("determinate status %q should report a separated row count", determinate)
+	}
+
+	indeterminate := buildLoadingStatus(42, 0, 0, 0)
+	if strings.Contains(indeterminate, "█") || strings.Contains(indeterminate, "%") {
+		t.Errorf("indeterminate status %q should show neither bar nor percentage", indeterminate)
+	}
+	if !strings.ContainsRune(indeterminate, spinnerFrames[0]) {
+		t.Errorf("indeterminate status %q should show a spinner frame", indeterminate)
+	}
+	if !strings.Contains(indeterminate, "42 rows") {
+		t.Errorf("indeterminate status %q should report the row tally", indeterminate)
+	}
+}
+
+// Bytes beyond the reported total must not produce a bar wider than its width
+// or a percentage above 100.
+func TestBuildLoadingStatus_ClampsOvershoot(t *testing.T) {
+	got := buildLoadingStatus(10, 500, 100, 0)
+	if !strings.Contains(got, "100.0%") {
+		t.Errorf("status %q should clamp to 100.0%%", got)
+	}
+	if strings.Count(got, "█") != progressBarWidth {
+		t.Errorf("status %q should fill exactly %d cells", got, progressBarWidth)
+	}
+}
+
+func TestBuildLoadingStatus_SpinnerAdvances(t *testing.T) {
+	seen := map[rune]bool{}
+	for tick := 0; tick < spinnerTicksPerFrame*len(spinnerFrames); tick++ {
+		for _, r := range buildLoadingStatus(1, 0, 0, tick) {
+			if r >= '⠀' && r <= '⣿' {
+				seen[r] = true
+			}
+		}
+	}
+	if len(seen) != len(spinnerFrames) {
+		t.Errorf("saw %d distinct spinner frames over one cycle, want %d", len(seen), len(spinnerFrames))
+	}
+}
+
+// trickleReader delivers its chunks one Read at a time, pausing between them,
+// standing in for a slow producer on the other end of a pipe.
+type trickleReader struct {
+	chunks []string
+	i      int
+	pause  time.Duration
+}
+
+func (r *trickleReader) Read(p []byte) (int, error) {
+	if r.i >= len(r.chunks) {
+		return 0, io.EOF
+	}
+	if r.i > 0 {
+		time.Sleep(r.pause)
+	}
+	n := copy(p, r.chunks[r.i])
+	r.i++
+	return n, nil
+}
+
+// A batch used to be flushed only once full or at EOF, so a slow stream showed
+// nothing beyond the separator-detection head until its producer closed. Rows
+// must reach the buffer, and progress must be reported, while data is still
+// arriving.
+func TestIntake_FlushesPartialBatchesWhileStreaming(t *testing.T) {
+	chunks := []string{"a,b,c\n"}
+	for i := 0; i < intakeDetectLines; i++ {
+		chunks[0] += I2S(i) + ",x,y\n"
+	}
+	for i := 0; i < 40; i++ {
+		chunks = append(chunks, I2S(100+i)+",x,y\n")
+	}
+
+	b := createNewBuffer()
+	b.rowFreeze = 1
+
+	var mu sync.Mutex
+	reports := 0
+	in := Intake{
+		Source:     Source{Reader: &trickleReader{chunks: chunks, pause: 15 * time.Millisecond}},
+		Config:     IntakeConfig{Sep: ','},
+		OnProgress: func(int, int64, int64) { mu.Lock(); reports++; mu.Unlock() },
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- in.Into(b) }()
+
+	// Well before the stream ends (40 chunks x 15ms = 600ms), rows past the
+	// head batch must already be visible.
+	time.Sleep(300 * time.Millisecond)
+
+	b.mu.RLock()
+	midLoad := b.rowLen
+	b.mu.RUnlock()
+	mu.Lock()
+	midReports := reports
+	mu.Unlock()
+
+	if midLoad <= intakeDetectLines+1 {
+		t.Errorf("only %d rows landed mid-stream; the batch is not being flushed until EOF", midLoad)
+	}
+	if midReports < 2 {
+		t.Errorf("only %d progress reports mid-stream, want several", midReports)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	b.mu.RLock()
+	total := b.rowLen
+	b.mu.RUnlock()
+	if total != 1+intakeDetectLines+40 {
+		t.Errorf("loaded %d rows in total, want %d", total, 1+intakeDetectLines+40)
 	}
 }

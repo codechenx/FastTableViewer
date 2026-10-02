@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"io"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Source is where rows come from. A file and a pipe are the two adapters that
@@ -52,6 +54,16 @@ const (
 
 	// intakeScanBuffer raises the scanner's line limit from the 64KB default.
 	intakeScanBuffer = 1024 * 1024
+
+	// intakeMaxReserveRows bounds the row index reserved up front, so a badly
+	// estimated row count cannot commit an unreasonable amount of memory.
+	intakeMaxReserveRows = 8 << 20
+
+	// intakeReportInterval reports progress on a clock as well as per N rows.
+	// A row count alone goes silent on a slow source — a pipe delivering fewer
+	// rows than the row interval never reports at all — which is precisely
+	// when a caller most wants to show that work is happening.
+	intakeReportInterval = 100 * time.Millisecond
 )
 
 // Intake loads one Source into one Buffer. Progressive rendering is the
@@ -81,7 +93,7 @@ func (in Intake) Into(b *Buffer) error {
 	scanner.Split(bufio.ScanLines)
 	scanner.Buffer(make([]byte, intakeScanBuffer), intakeScanBuffer)
 
-	lines := &lineFeed{scanner: scanner, cfg: in.Config, skipLeft: in.Config.SkipLines}
+	lines := newLineFeed(scanner, in.Config)
 
 	// Buffer enough lines to settle the separator. These are real rows and are
 	// appended below, in order, before anything is streamed.
@@ -108,11 +120,12 @@ func (in Intake) Into(b *Buffer) error {
 	}
 
 	state := &intakeState{
-		in:    in,
-		b:     b,
-		sep:   sep,
-		every: every,
-		total: in.Source.Size,
+		in:         in,
+		b:          b,
+		sep:        sep,
+		every:      every,
+		total:      in.Source.Size,
+		lastReport: time.Now(),
 	}
 
 	if err := state.appendBatch(head); err != nil {
@@ -122,23 +135,57 @@ func (in Intake) Into(b *Buffer) error {
 	// paint something immediately rather than waiting for a full batch.
 	state.report()
 
+	// Reserve the row index up front, estimating the count from the source
+	// size and the average line length seen so far. Growing it by appending
+	// reallocates and copies repeatedly, which was the single largest source
+	// of allocation in a large load.
+	b.reserveRows(state.estimateRows())
+
 	// Stream the rest in batches. Each batch parses in parallel and appends in
 	// input order, so row order always matches the source.
-	batch := make([]string, 0, intakeBatchSize)
+	//
+	// Lines are gathered as bytes and turned into a single string per batch,
+	// from which each line and then each field is a substring. That costs one
+	// allocation for a batch's text rather than one per line, which was the
+	// last per-row allocation in a load.
+	var raw []byte
+	spans := make([][2]int, 0, intakeBatchSize)
+
+	flush := func() error {
+		if len(spans) == 0 {
+			return nil
+		}
+		blob := string(raw)
+		batch := state.lines[:0]
+		for _, sp := range spans {
+			batch = append(batch, blob[sp[0]:sp[1]])
+		}
+		state.lines = batch
+
+		raw = raw[:0]
+		spans = spans[:0]
+		return state.appendBatch(batch)
+	}
+
 	for !state.done() {
-		line, ok := lines.next()
+		line, ok := lines.nextBytes()
 		if !ok {
 			break
 		}
-		batch = append(batch, line)
-		if len(batch) >= intakeBatchSize {
-			if err := state.appendBatch(batch); err != nil {
+		start := len(raw)
+		raw = append(raw, line...)
+		spans = append(spans, [2]int{start, len(raw)})
+
+		// Flush a full batch, or a partial one once a report is due. Waiting
+		// for a full batch means a slow stream shows nothing at all until its
+		// producer closes, which defeats progressive rendering.
+		if len(spans) >= intakeBatchSize || state.reportDue() {
+			if err := flush(); err != nil {
 				return err
 			}
-			batch = batch[:0]
 		}
 	}
-	if err := state.appendBatch(batch); err != nil {
+	if err := flush(); err != nil {
 		return err
 	}
 
@@ -178,52 +225,120 @@ type lineFeed struct {
 	scanner  *bufio.Scanner
 	cfg      IntakeConfig
 	skipLeft int
+	prefixes [][]byte // SkipPrefix, converted once
 }
 
-// next returns the next line that survives the skip rules.
-func (lf *lineFeed) next() (string, bool) {
+// newLineFeed prepares a feed over scanner.
+func newLineFeed(scanner *bufio.Scanner, cfg IntakeConfig) *lineFeed {
+	prefixes := make([][]byte, 0, len(cfg.SkipPrefix))
+	for _, p := range cfg.SkipPrefix {
+		prefixes = append(prefixes, []byte(p))
+	}
+	return &lineFeed{scanner: scanner, cfg: cfg, skipLeft: cfg.SkipLines, prefixes: prefixes}
+}
+
+// nextBytes returns the next line that survives the skip rules. The bytes
+// belong to the scanner and are only valid until the following call, so a
+// caller that needs to keep them must copy them out.
+func (lf *lineFeed) nextBytes() ([]byte, bool) {
 	for lf.scanner.Scan() {
-		line := lf.scanner.Text()
+		line := lf.scanner.Bytes()
 
 		// Preserves existing behaviour: ScanLines strips the newline, so this
 		// never fires and genuinely blank lines become rows.
-		if line == "\n" {
+		if len(line) == 1 && line[0] == '\n' {
 			continue
 		}
 		if lf.skipLeft > 0 {
 			lf.skipLeft--
 			continue
 		}
-		if skipLine(line, lf.cfg.SkipPrefix) {
+		if bytesHasAnyPrefix(line, lf.prefixes) {
 			continue
 		}
 		return line, true
 	}
-	return "", false
+	return nil, false
+}
+
+// next returns the next surviving line as its own string.
+func (lf *lineFeed) next() (string, bool) {
+	line, ok := lf.nextBytes()
+	if !ok {
+		return "", false
+	}
+	return string(line), true
+}
+
+// bytesHasAnyPrefix reports whether line starts with any of the prefixes.
+func bytesHasAnyPrefix(line []byte, prefixes [][]byte) bool {
+	for _, p := range prefixes {
+		if bytes.HasPrefix(line, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // intakeState carries the running totals for one load.
 type intakeState struct {
-	in     Intake
-	b      *Buffer
-	sep    rune
-	every  int
-	rows   int
-	loaded int64
-	total  int64
-	sinceR int
+	in         Intake
+	b          *Buffer
+	sep        rune
+	every      int
+	rowCount   int
+	loaded     int64
+	total      int64
+	sinceR     int
+	lastReport time.Time
+
+	// Scratch reused across batches. Allocating these per batch accounted for
+	// a fifth of a large load's allocations.
+	parsed [][]string
+	errs   []error
+	rows   [][]string
+	lines  []string
+}
+
+// estimateRows guesses the source's total row count from its size and the
+// average length of the rows read so far. It returns 0 when the size is not
+// knowable, as for a stream, leaving the index to grow as it goes.
+func (s *intakeState) estimateRows() int {
+	if s.total <= 0 || s.rowCount == 0 || s.loaded == 0 {
+		return 0
+	}
+
+	avg := float64(s.loaded) / float64(s.rowCount)
+	est := int(float64(s.total)/avg) + intakeBatchSize
+
+	// A short sample can mis-estimate badly, so bound the reservation.
+	if est > intakeMaxReserveRows {
+		est = intakeMaxReserveRows
+	}
+	if m := s.in.Config.MaxLines; m > 0 && est > m {
+		est = m
+	}
+	return est
 }
 
 // done reports whether the row limit has been reached.
 func (s *intakeState) done() bool {
-	return s.in.Config.MaxLines > 0 && s.rows >= s.in.Config.MaxLines
+	return s.in.Config.MaxLines > 0 && s.rowCount >= s.in.Config.MaxLines
 }
 
 // report invokes the progress callback, if there is one.
 func (s *intakeState) report() {
+	s.sinceR = 0
+	s.lastReport = time.Now()
 	if s.in.OnProgress != nil {
-		s.in.OnProgress(s.rows, s.loaded, s.total)
+		s.in.OnProgress(s.rowCount, s.loaded, s.total)
 	}
+}
+
+// reportDue reports whether enough rows or enough time have passed to warrant
+// another progress report.
+func (s *intakeState) reportDue() bool {
+	return s.sinceR >= s.every || time.Since(s.lastReport) >= intakeReportInterval
 }
 
 // appendBatch parses lines in parallel then appends them in input order.
@@ -232,8 +347,22 @@ func (s *intakeState) appendBatch(lines []string) error {
 		return nil
 	}
 
-	parsed := make([][]string, len(lines))
-	errs := make([]error, len(lines))
+	if cap(s.parsed) < len(lines) {
+		s.parsed = make([][]string, len(lines))
+		s.errs = make([]error, len(lines))
+		s.rows = make([][]string, 0, len(lines))
+		s.lines = make([]string, 0, len(lines))
+	}
+	parsed, errs := s.parsed[:len(lines)], s.errs[:len(lines)]
+
+	// Field storage is carved per worker from one block, so parsing a batch
+	// costs a few allocations rather than one per row.
+	fieldsPerRow := 8
+	s.b.mu.RLock()
+	if s.b.colLen > 0 {
+		fieldsPerRow = s.b.colLen + 1
+	}
+	s.b.mu.RUnlock()
 
 	workers := runtime.NumCPU()
 	if workers > intakeMaxWorkers {
@@ -257,21 +386,25 @@ func (s *intakeState) appendBatch(lines []string) error {
 		wg.Add(1)
 		go func(lo, hi int) {
 			defer wg.Done()
+			block := make([]string, 0, (hi-lo)*fieldsPerRow)
 			for i := lo; i < hi; i++ {
-				fields, err := lineCSVParseFast(lines[i], s.sep)
-				if err != nil {
-					errs[i] = err
+				errs[i] = nil
+				if hasQuotes(lines[i]) {
+					parsed[i], errs[i] = lineCSVParse(lines[i], s.sep)
 					continue
 				}
-				parsed[i] = fields
+				parsed[i], block = splitFieldsInto(lines[i], s.sep, block)
 			}
 		}(lo, hi)
 	}
 	wg.Wait()
 
+	// Collect the batch's visible rows, then append them under one lock.
+	rows := s.rows[:0]
+	var bytesRead int64
 	for i, line := range lines {
-		if s.done() {
-			return nil
+		if s.in.Config.MaxLines > 0 && s.rowCount+len(rows) >= s.in.Config.MaxLines {
+			break
 		}
 		if errs[i] != nil {
 			return errs[i]
@@ -281,17 +414,19 @@ func (s *intakeState) appendBatch(lines []string) error {
 		if err != nil {
 			return err
 		}
-		if err := s.b.contAppendSli(fields, s.in.Config.Strict); err != nil {
-			return err
-		}
+		rows = append(rows, fields)
+		bytesRead += int64(len(line) + 1) // +1 for the stripped newline
+	}
 
-		s.rows++
-		s.sinceR++
-		s.loaded += int64(len(line) + 1) // +1 for the stripped newline
-		if s.sinceR >= s.every {
-			s.sinceR = 0
-			s.report()
-		}
+	if err := s.b.appendRows(rows, s.in.Config.Strict); err != nil {
+		return err
+	}
+
+	s.rowCount += len(rows)
+	s.sinceR += len(rows)
+	s.loaded += bytesRead
+	if s.reportDue() {
+		s.report()
 	}
 	return nil
 }

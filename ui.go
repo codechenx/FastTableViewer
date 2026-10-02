@@ -9,8 +9,61 @@ import (
 	"github.com/rivo/tview"
 )
 
-// redraw repaints the table from whatever the view currently shows.
-func redraw() { drawBuffer(view.Visible(), bufferTable) }
+// Footer palette. One set of colours, used by the single footer renderer, so
+// the loading status and the post-load status cannot drift apart.
+var (
+	footerLeftColor   = tcell.NewRGBColor(255, 150, 50)
+	footerCentreColor = tcell.NewRGBColor(100, 200, 255)
+	footerRightColor  = tcell.NewRGBColor(150, 255, 150)
+	filterStripColor  = tcell.NewRGBColor(255, 140, 0)
+)
+
+const (
+	// progressBarWidth is the cell width of the determinate loading bar.
+	progressBarWidth = 22
+
+	// spinnerTicksPerFrame slows the indeterminate spinner down from the
+	// refresh rate to something readable.
+	spinnerTicksPerFrame = 4
+)
+
+// spinnerFrames animates the indeterminate case, where no total is knowable.
+var spinnerFrames = []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'}
+
+// drawFooter repaints the filter strip and the footer. It is the only place
+// either is rendered: the loading path used to rebuild the footer itself, in a
+// different palette and without the filter strip.
+func drawFooter(left, centre, right string) {
+	if mainPage == nil {
+		return
+	}
+	statusMessage = centre
+
+	mainPage.Clear()
+	if strip := buildFilterInfoStr(view.CursorColumn()); strip != "" {
+		mainPage.AddText(strip, true, tview.AlignCenter, filterStripColor)
+	}
+	mainPage.AddText(left, false, tview.AlignLeft, footerLeftColor).
+		AddText(centre, false, tview.AlignCenter, footerCentreColor).
+		AddText(right, false, tview.AlignRight, footerRightColor)
+}
+
+// buildLoadingStatus renders load progress for the footer. A source whose size
+// is known gets a determinate bar; a stream or a compressed file, whose total
+// cannot be known ahead of time, gets a spinner and a row tally.
+func buildLoadingStatus(rows int, loaded, total int64, tick int) string {
+	if total <= 0 {
+		frame := spinnerFrames[(tick/spinnerTicksPerFrame)%len(spinnerFrames)]
+		return fmt.Sprintf("%c  Loading  %s rows", frame, formatCount(rows))
+	}
+
+	percent := float64(loaded) * 100 / float64(total)
+	if percent > 100 {
+		percent = 100
+	}
+	return fmt.Sprintf("%s %5.1f%%  %s rows",
+		progressBar(percent, progressBarWidth), percent, formatCount(rows))
+}
 
 // visibleRows and visibleCols are the bounds navigation clamps against.
 func visibleRows() int { rows, _ := view.Dims(); return rows }
@@ -37,91 +90,6 @@ func buildFilterInfoStr(currentColumn int) string {
 
 	// Show summary if cursor is not on a filtered column
 	return fmt.Sprintf("🔎 %d filters active  |  Navigate to filtered column and press 'r' to remove", view.FilterCount())
-}
-
-// add buffer data to buffer table
-func drawBuffer(b *Buffer, t *tview.Table) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	t.Clear()
-	cols, rows := b.colLen, b.rowLen
-
-	for r := 0; r < rows; r++ {
-		for c := 0; c < cols; c++ {
-			color := tcell.ColorWhite
-			backgroundColor := tcell.ColorDefault
-			attributes := tcell.AttrNone
-			alignment := tview.AlignLeft
-
-			// Get cell content
-			cellText := b.cont[r][c]
-
-			// Check if this is a header row/column (frozen area)
-			isHeaderRow := r < b.rowFreeze && args.Header != -1 && args.Header != 2
-			isHeaderCol := c < b.colFreeze
-
-			// Modern header styling with rich visual design
-			if isHeaderRow {
-				// Main header row: bold white text on gradient blue background
-				color = tcell.ColorWhite
-				backgroundColor = tcell.NewRGBColor(30, 60, 120) // Deep blue
-				attributes = tcell.AttrBold | tcell.AttrUnderline
-				alignment = tview.AlignCenter
-
-				// Add filter indicator if this column has a filter applied
-				if _, hasFilter := view.FilterAt(c); hasFilter {
-					cellText = "🔎 " + cellText + " 🔎"
-					backgroundColor = tcell.NewRGBColor(255, 100, 0) // Orange background for filtered column
-				}
-			} else if isHeaderCol {
-				// Frozen column: gold color for row headers
-				color = tcell.NewRGBColor(255, 215, 0) // Gold
-				attributes = tcell.AttrBold
-			}
-
-			// Check if this cell is a search result and highlight it
-			isSearchMatch, isCurrentMatch := view.MatchAt(r, c)
-
-			// Modern search match highlighting (overrides header styling)
-			if isSearchMatch {
-				// Check if this is the current search result
-				if isCurrentMatch {
-					// Current match: vibrant cyan highlight
-					backgroundColor = tcell.NewRGBColor(0, 180, 216)
-					color = tcell.ColorBlack
-					attributes = tcell.AttrBold
-				} else {
-					// Other matches: soft purple highlight
-					backgroundColor = tcell.NewRGBColor(100, 100, 150)
-					color = tcell.ColorWhite
-					attributes = tcell.AttrNone
-				}
-			}
-
-			// Determine max width for this column
-			maxWidth := 0
-			if width, isWrapped := view.ColumnWidth(c); isWrapped {
-				maxWidth = width
-				// Truncate text if it exceeds max width
-				cellText = truncateText(cellText, maxWidth)
-			}
-
-			// Create cell with modern styling
-			cell := tview.NewTableCell(cellText).
-				SetTextColor(color).
-				SetBackgroundColor(backgroundColor).
-				SetAttributes(attributes).
-				SetAlign(alignment).
-				SetExpansion(1)
-
-			if maxWidth > 0 {
-				cell.SetMaxWidth(maxWidth)
-			}
-
-			t.SetCell(r, c, cell)
-		}
-	}
 }
 
 // add stats data to stats table
@@ -159,6 +127,7 @@ func drawUI() error {
 
 	//bufferTable init with modern styling
 	bufferTable = tview.NewTable()
+	bufferTable.SetContent(bufferContent{})
 	bufferTable.SetSelectable(true, true)
 	bufferTable.SetBorders(false)
 	bufferTable.SetSeparator(tview.Borders.Vertical)             // Add subtle vertical separators
@@ -174,8 +143,6 @@ func drawUI() error {
 	// Auto-detect and wrap long columns (sample first 100 rows, threshold 50 characters)
 	view.DetectWideColumns(100, 50)
 
-	redraw()
-
 	//main page init with modern styling
 	cursorPosStr = buildCursorPosStr(0, 0) //footer right
 	if statusMessage == "" {
@@ -183,36 +150,10 @@ func drawUI() error {
 	}
 	shorFileName := filepath.Base(args.FileName)
 	fileNameStr = shorFileName + "  |  " + "? help" //footer left
-	filterInfoStr := buildFilterInfoStr(0)          // Top strip for filter info, initially at column 0
 
 	mainPage = tview.NewFrame(bufferTable).
 		SetBorders(0, 0, 0, 0, 0, 0)
-
-	// Add filter info strip at top if filter is active and cursor on filtered column
-	if filterInfoStr != "" {
-		mainPage.AddText(filterInfoStr, true, tview.AlignCenter, tcell.NewRGBColor(255, 140, 0))
-	}
-
-	// Add main footer at bottom
-	mainPage.AddText(fileNameStr, false, tview.AlignLeft, tcell.NewRGBColor(255, 150, 50)).
-		AddText(statusMessage, false, tview.AlignCenter, tcell.NewRGBColor(100, 200, 255)).
-		AddText(cursorPosStr, false, tview.AlignRight, tcell.NewRGBColor(150, 255, 150))
-
-	drawFooterText := func(lstr, cstr, rstr string) {
-		statusMessage = cstr // Update global status
-		mainPage.Clear()
-
-		// Add filter info strip at top if filter is active and cursor on filtered column
-		filterInfoStr := buildFilterInfoStr(view.CursorColumn())
-		if filterInfoStr != "" {
-			mainPage.AddText(filterInfoStr, true, tview.AlignCenter, tcell.NewRGBColor(255, 140, 0))
-		}
-
-		// Add main footer at bottom
-		mainPage.AddText(lstr, false, tview.AlignLeft, tcell.NewRGBColor(255, 150, 50)).
-			AddText(cstr, false, tview.AlignCenter, tcell.NewRGBColor(100, 200, 255)).
-			AddText(rstr, false, tview.AlignRight, tcell.NewRGBColor(150, 255, 150))
-	}
+	drawFooter(fileNameStr, statusMessage, cursorPosStr)
 
 	//UI init - add pages to UI container
 	UI = tview.NewPages()
@@ -232,7 +173,7 @@ func drawUI() error {
 		cursorPosStr = buildCursorPosStr(row, column)
 
 		// Rebuild the page with filter strip based on current column
-		drawFooterText(fileNameStr, statusMessage, cursorPosStr)
+		drawFooter(fileNameStr, statusMessage, cursorPosStr)
 	})
 
 	//bufferTable HotKey Event
@@ -383,18 +324,17 @@ func drawUI() error {
 						if match, ok := view.CurrentMatch(); ok {
 							bufferTable.Select(match.Row, match.Col)
 						}
-						redraw()
 						searchMode := "matches"
 						if useRegex {
 							searchMode = "regex matches"
 						}
-						drawFooterText(fileNameStr,
+						drawFooter(fileNameStr,
 							fmt.Sprintf("Found %d %s (1/%d)", found, searchMode, found),
 							cursorPosStr)
 					} else if useRegex {
-						drawFooterText(fileNameStr, "Invalid regex or no matches found", cursorPosStr)
+						drawFooter(fileNameStr, "Invalid regex or no matches found", cursorPosStr)
 					} else {
-						drawFooterText(fileNameStr, "No matches found", cursorPosStr)
+						drawFooter(fileNameStr, "No matches found", cursorPosStr)
 					}
 				}
 				UI.HidePage("searchModal")
@@ -466,12 +406,11 @@ func drawUI() error {
 		if event.Key() == tcell.KeyRune && event.Rune() == 'n' {
 			if match, ok := view.NextMatch(); ok {
 				bufferTable.Select(match.Row, match.Col)
-				redraw() // Redraw to update highlighting
-				drawFooterText(fileNameStr,
+				drawFooter(fileNameStr,
 					fmt.Sprintf("Match %d/%d", view.MatchIndex(), view.MatchCount()),
 					cursorPosStr)
 			} else if view.Searching() {
-				drawFooterText(fileNameStr, "No search results. Press / to search", cursorPosStr)
+				drawFooter(fileNameStr, "No search results. Press / to search", cursorPosStr)
 			}
 			return nil
 		}
@@ -480,12 +419,11 @@ func drawUI() error {
 		if event.Key() == tcell.KeyRune && event.Rune() == 'N' {
 			if match, ok := view.PrevMatch(); ok {
 				bufferTable.Select(match.Row, match.Col)
-				redraw() // Redraw to update highlighting
-				drawFooterText(fileNameStr,
+				drawFooter(fileNameStr,
 					fmt.Sprintf("Match %d/%d", view.MatchIndex(), view.MatchCount()),
 					cursorPosStr)
 			} else if view.Searching() {
-				drawFooterText(fileNameStr, "No search results. Press / to search", cursorPosStr)
+				drawFooter(fileNameStr, "No search results. Press / to search", cursorPosStr)
 			}
 			return nil
 		}
@@ -494,8 +432,7 @@ func drawUI() error {
 		if event.Key() == tcell.KeyEscape {
 			if view.Searching() {
 				view.ClearSearch()
-				redraw()
-				drawFooterText(fileNameStr, "Search cleared", cursorPosStr)
+				drawFooter(fileNameStr, "Search cleared", cursorPosStr)
 			}
 			return nil
 		}
@@ -541,7 +478,7 @@ func drawUI() error {
 				operator := operators[selectedOperatorIndex]
 
 				if query != "" {
-					drawFooterText(fileNameStr, "Filtering...", cursorPosStr)
+					drawFooter(fileNameStr, "Filtering...", cursorPosStr)
 					app.ForceDraw()
 
 					rows, kept := view.ApplyFilter(column, FilterOptions{
@@ -550,24 +487,22 @@ func drawUI() error {
 						CaseSensitive: caseSensitive,
 					})
 					if kept {
-						redraw()
 						bufferTable.Select(0, column) // Stay at same column, go to first row
-						drawFooterText(fileNameStr,
+						drawFooter(fileNameStr,
 							fmt.Sprintf("Filtered: %d rows match (%d filters active, r to reset)", rows, view.FilterCount()),
 							cursorPosStr)
 					} else {
-						drawFooterText(fileNameStr, "No rows match filters", cursorPosStr)
+						drawFooter(fileNameStr, "No rows match filters", cursorPosStr)
 					}
 				} else if view.ClearFilter(column) {
 					// An empty query removes this column's filter.
-					redraw()
 					bufferTable.Select(0, column) // Stay at same column
 					if view.Filtered() {
-						drawFooterText(fileNameStr,
+						drawFooter(fileNameStr,
 							fmt.Sprintf("Filter removed: %d rows match (%d filters active)", view.DataRows(), view.FilterCount()),
 							cursorPosStr)
 					} else {
-						drawFooterText(fileNameStr, "All filters cleared - showing all rows", cursorPosStr)
+						drawFooter(fileNameStr, "All filters cleared - showing all rows", cursorPosStr)
 					}
 				}
 				UI.HidePage("filterModal")
@@ -655,17 +590,16 @@ func drawUI() error {
 				row, column := bufferTable.GetSelection()
 
 				if view.ClearFilter(column) {
-					redraw()
 					bufferTable.Select(row, column)
 					if view.Filtered() {
-						drawFooterText(fileNameStr,
+						drawFooter(fileNameStr,
 							fmt.Sprintf("Filter removed from current column: %d rows match (%d filters active)", view.DataRows(), view.FilterCount()),
 							cursorPosStr)
 					} else {
-						drawFooterText(fileNameStr, "All filters cleared - showing all rows", cursorPosStr)
+						drawFooter(fileNameStr, "All filters cleared - showing all rows", cursorPosStr)
 					}
 				} else {
-					drawFooterText(fileNameStr, "Current column has no filter - navigate to filtered column to remove", cursorPosStr)
+					drawFooter(fileNameStr, "Current column has no filter - navigate to filtered column to remove", cursorPosStr)
 				}
 			}
 			return nil
@@ -674,27 +608,25 @@ func drawUI() error {
 		// s - sort by column, ascending (s for sort)
 		if event.Key() == tcell.KeyRune && event.Rune() == 's' {
 			_, column := bufferTable.GetSelection()
-			drawFooterText(fileNameStr, "Sorting...", cursorPosStr)
+			drawFooter(fileNameStr, "Sorting...", cursorPosStr)
 			app.ForceDraw()
 			view.SortBy(column, false)
-			redraw()
-			drawFooterText(fileNameStr, "All Done", cursorPosStr)
+			drawFooter(fileNameStr, "All Done", cursorPosStr)
 		}
 
 		// S - sort by column, descending (capital S for reverse sort)
 		if event.Key() == tcell.KeyRune && event.Rune() == 'S' {
 			_, column := bufferTable.GetSelection()
-			drawFooterText(fileNameStr, "Sorting...", cursorPosStr)
+			drawFooter(fileNameStr, "Sorting...", cursorPosStr)
 			app.ForceDraw()
 			view.SortBy(column, true)
-			redraw()
-			drawFooterText(fileNameStr, "All Done", cursorPosStr)
+			drawFooter(fileNameStr, "All Done", cursorPosStr)
 		}
 
 		// i - show stats info for current column
 		if event.Key() == tcell.KeyRune && event.Rune() == 'i' {
 			_, column := bufferTable.GetSelection()
-			drawFooterText(fileNameStr, "Calculating statistics...", cursorPosStr)
+			drawFooter(fileNameStr, "Calculating statistics...", cursorPosStr)
 			app.ForceDraw()
 
 			// The view's visible buffer is the filtered one when filters are
@@ -720,7 +652,7 @@ func drawUI() error {
 
 			// Show statistics as a modal dialog with filter indication
 			showStatsDialog(statsS, columnName, colType)
-			drawFooterText(fileNameStr, "All Done", cursorPosStr)
+			drawFooter(fileNameStr, "All Done", cursorPosStr)
 			return nil
 		}
 
@@ -731,7 +663,7 @@ func drawUI() error {
 			// Cycle through types: Str -> Num -> Date -> Str
 			view.CycleColType(column)
 			cursorPosStr = buildCursorPosStr(row, column)
-			drawFooterText(fileNameStr, statusMessage, cursorPosStr)
+			drawFooter(fileNameStr, statusMessage, cursorPosStr)
 		}
 
 		// W - toggle text wrapping for current column (capital W for wrap)
@@ -739,13 +671,12 @@ func drawUI() error {
 			_, column := bufferTable.GetSelection()
 
 			if width, limited := view.ToggleWrap(column); limited {
-				drawFooterText(fileNameStr, fmt.Sprintf("Column width limited to %d chars", width), cursorPosStr)
+				drawFooter(fileNameStr, fmt.Sprintf("Column width limited to %d chars", width), cursorPosStr)
 			} else {
-				drawFooterText(fileNameStr, "Column width limit removed", cursorPosStr)
+				drawFooter(fileNameStr, "Column width limit removed", cursorPosStr)
 			}
 
 			// Redraw the table with updated wrapping
-			redraw()
 			return nil
 		}
 

@@ -66,7 +66,30 @@ func createNewBufferWithData(ss [][]string, strict bool) (*Buffer, error) {
 func (b *Buffer) contAppendSli(s []string, strict bool) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.appendRowUnsafe(s, strict)
+}
 
+// appendRows appends several rows under a single lock. A load parses in
+// batches, so taking the lock once per batch instead of once per row removes
+// almost all of a load's lock traffic — and with it the contention that kept
+// the UI from painting while rows streamed in.
+func (b *Buffer) appendRows(rows [][]string, strict bool) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for _, row := range rows {
+		if err := b.appendRowUnsafe(row, strict); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// appendRowUnsafe appends one row. The caller holds the write lock.
+func (b *Buffer) appendRowUnsafe(s []string, strict bool) error {
 	// Initialize on first row
 	if b.rowLen == 0 {
 		b.colLen = len(s)
@@ -125,6 +148,21 @@ func (b *Buffer) resizeCol(n int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.resizeColUnsafe(n)
+}
+
+// reserveRows grows the row index's capacity to hold n rows. Appending a
+// million rows otherwise reallocates and copies the index a few dozen times,
+// which dominated a large load's allocation profile.
+func (b *Buffer) reserveRows(n int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if n <= cap(b.cont) {
+		return
+	}
+	grown := make([][]string, len(b.cont), n)
+	copy(grown, b.cont)
+	b.cont = grown
 }
 
 // SortBy orders the buffer's data rows by one column, using that column's own

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/fatih/color"
 )
@@ -248,4 +249,45 @@ func performSearch(b *Buffer, spec MatchSpec) []SearchResult {
 	}
 
 	return results
+}
+
+// formatCount renders a count with thousands separators, so a row tally stays
+// legible as it grows.
+func formatCount(n int) string {
+	if n < 0 {
+		return strconv.Itoa(n)
+	}
+	s := strconv.Itoa(n)
+	var out strings.Builder
+	for i := 0; i < len(s); i++ {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out.WriteByte(',')
+		}
+		out.WriteByte(s[i])
+	}
+	return out.String()
+}
+
+// progressBar renders percent (0-100) as a bar of the given cell width.
+func progressBar(percent float64, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+
+	filled := int(percent / 100 * float64(width))
+	if filled > width {
+		filled = width
+	}
+	// Show a sliver as soon as there is any progress at all, so the bar never
+	// looks stalled while rows are arriving.
+	if filled == 0 && percent > 0 {
+		filled = 1
+	}
+	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
 }
