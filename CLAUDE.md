@@ -27,9 +27,9 @@ Single flat `package main`, ~3.9k lines across 13 non-test files, no subpackages
 
 ```
 ftv.go ──► Intake ──► Buffer ◄── ViewState ◄── ui.go
-(CLI)    (intake.go)  (buffer.go)  (viewstate.go)
-             │            │            │
-          Source       ColumnType    Matcher
+(CLI)    (intake.go)  (buffer.go)  (viewstate.go)    │
+             │            │            │             └─ bufferContent
+          Source       ColumnType    Matcher            (content.go)
        (io.go adapters) (coltype.go) (match.go)
 ```
 
@@ -41,7 +41,9 @@ ftv.go ──► Intake ──► Buffer ◄── ViewState ◄── ui.go
 - **`IntakeConfig`** is an immutable snapshot built by `Args.intakeConfig()`. Intake never writes to it, so loading twice behaves identically.
 - **Parsing preserves input order.** Lines are batched (`intakeBatchSize`), parsed in parallel across up to 8 workers, then appended in input order. The previous pipeline fed a worker pool and appended in *completion* order, scrambling most rows of every file — `TestIntake_PreservesRowOrder*` guards against regressing this.
 - **Separator resolution:** explicit `Config.Sep` → `.csv`/`.tsv` suffix → `sepDetect` over the first 10 surviving lines → error. `sepDetecor.sepDetect` in `sepDector.go` (the typo is in both the filename and the type) is deep: `[]string → rune` over ~200 lines of scored heuristics.
-- `lineFeed` applies the skip rules once for every source, with its own countdown.
+- `lineFeed` applies the skip rules once for every source, with its own countdown. It reads `scanner.Bytes()` and matches skip prefixes against precomputed `[][]byte`, so filtering a line allocates nothing.
+- **A batch costs a handful of allocations, not one per row.** Lines accumulate as bytes and become a single string per batch, from which each line and then each field is a substring; each worker carves its rows' `[]string` from one block. Rows come back with `cap == len` deliberately, so widening one (`resizeColUnsafe` padding a short row) reallocates instead of writing over the next row's storage. Changing this is how you reintroduce 1.2M allocations per load.
+- **Progress is reported on a clock as well as per N rows**, and a partial batch is flushed when a report is due. A row-count trigger alone goes silent on a slow stream — a pipe delivering fewer rows than the interval never reports, and never renders, until its producer closes.
 
 ### Buffer — the table (`buffer.go`)
 
@@ -49,11 +51,13 @@ ftv.go ──► Intake ──► Buffer ◄── ViewState ◄── ui.go
 
 `SortBy(col, desc)` is the only sort entry point. It looks up the column's type and orders accordingly, parsing each cell once, so nothing outside switches on type.
 
+`appendRows` takes the lock once for a whole batch and `reserveRows` sizes the row index up front from the source's size; `contAppendSli` remains for single rows. Taking the write lock per row, and letting the index grow by appending, together accounted for most of a large load's cost.
+
 ### ViewState — what is on screen (`viewstate.go`)
 
 Owns the visible buffer, the filter set, the search and its match set, width-limited columns, and the cursor column. Every change goes through an intent method (`ApplyFilter`, `ClearFilter`, `Search`, `CycleColType`, `ToggleWrap`, `SortBy`) and each leaves derived state consistent, so the table, the highlighting and the footer cannot disagree.
 
-- Filtering **swaps the buffer**: `original` keeps the unfiltered data, and any filter change rebuilds from it by chaining `filterByColumn` over the active filters in column order. `Visible()` is what `drawBuffer` renders.
+- Filtering **swaps the buffer**: `original` keeps the unfiltered data, and any filter change rebuilds from it by chaining `filterByColumn` over the active filters in column order. `Visible()` is what the table renders.
 - Changing a filter re-runs the search, because match coordinates index the visible buffer.
 - A filter matching nothing is discarded rather than blanking the view.
 - **Reached only from the tview event loop** (key handlers and `QueueUpdateDraw` callbacks), never from the loading goroutine, so it carries no lock of its own.
@@ -83,7 +87,11 @@ Comparison operators (`>`, `<`, `>=`, `<=`) use the column type's parser, so dat
 
 ### UI (`ui.go`)
 
-`drawUI()` runs once after the first rows land and wires everything: it builds `bufferTable` and installs one large `SetInputCapture` closure holding every key binding, plus mouse and selection handlers. Search and filter modals are built inline there. `drawBuffer` rebuilds every cell on each redraw and decides header styling, match highlighting, filter markers and truncation; `redraw()` is the shorthand for repainting from the view.
+`drawUI()` runs once after the first rows land and wires everything: it builds `bufferTable` and installs one large `SetInputCapture` closure holding every key binding, plus mouse and selection handlers. Search and filter modals are built inline there.
+
+**The table is virtual.** `bufferContent` in `content.go` implements tview's `TableContent`, so cells are built only as they are painted, and it is the single place header styling, match highlighting, filter markers and truncation are decided. There is deliberately no full-table painter: materialising every cell cost roughly 1.7KB per row, so a 48MB file needed about 2GB and a third of a second per repaint, and the UI could not keep up with a load. Nothing needs to repaint after a state change — tview redraws after each event and pulls what it needs.
+
+While loading, `refreshWhileLoading` repaints only the footer, on a 20 ms ticker, showing a determinate bar when the source size is known and a spinner with a row tally when it is not (a stream or a `.gz`, where no honest percentage exists). `buildLoadingStatus` renders it and `drawFooter` is the one footer renderer — the loading path used to rebuild the footer itself, in a different palette and without the filter strip.
 
 `init.go` holds what is left at package level: the tview handles, `view`, `args`, `debug`, `loadProgress`, the three footer strings, and the input state for recognising `gg` (a timestamp, checked on the event loop — the flag it replaced was cleared by a timer goroutine).
 
@@ -107,3 +115,17 @@ Deliberately left alone; don't treat them as accidents:
 ## Release
 
 goreleaser (`.goreleaser.yml`) on tag push, targeting Homebrew, AUR, snap and PKGBUILD. `make version` rewrites the version across `ftv.go`, `README.md`, `snap/snapcraft.yaml` and `PKGBUILD` — the only sanctioned way to bump, since the version is hardcoded in `main`'s cobra command.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues at `codechenx/FastTableViewer`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles, each label string equal to its name. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` plus `docs/adr/` at the repo root. See `docs/agents/domain.md`.
