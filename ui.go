@@ -4,38 +4,39 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
-	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
 
+// redraw repaints the table from whatever the view currently shows.
+func redraw() { drawBuffer(view.Visible(), bufferTable) }
+
+// visibleRows and visibleCols are the bounds navigation clamps against.
+func visibleRows() int { rows, _ := view.Dims(); return rows }
+func visibleCols() int { _, cols := view.Dims(); return cols }
+
 // buildCursorPosStr builds the cursor position string (without filter info now)
 func buildCursorPosStr(row, column int) string {
-	posStr := "Column Type: " + type2name(b.getColType(column)) + "  |  " + strconv.Itoa(row) + "," + strconv.Itoa(column) + "  "
+	posStr := "Column Type: " + type2name(view.ColType(column)) + "  |  " + strconv.Itoa(row) + "," + strconv.Itoa(column) + "  "
 	return posStr
 }
 
 // buildFilterInfoStr builds the filter information string for the top strip
 // Shows all active filters or current column filter when cursor is on a filtered column
 func buildFilterInfoStr(currentColumn int) string {
-	if !isFiltered || len(activeFilters) == 0 {
+	if !view.Filtered() {
 		return "" // No filter active
 	}
 
 	// Check if current column has a filter
-	if opts, hasFilter := activeFilters[currentColumn]; hasFilter {
-		// Get column name if available
-		columnName := fmt.Sprintf("Column %d", currentColumn)
-		if b.rowFreeze > 0 && len(b.cont) > 0 && currentColumn < len(b.cont[0]) {
-			columnName = b.cont[0][currentColumn]
-		}
-
-		return fmt.Sprintf("🔎 Filter Active: [%s] %s \"%s\"  |  %d filters total  |  Press 'r' to remove this filter", columnName, opts.Operator, opts.Query, len(activeFilters))
+	if opts, hasFilter := view.FilterAt(currentColumn); hasFilter {
+		return fmt.Sprintf("🔎 Filter Active: [%s] %s \"%s\"  |  %d filters total  |  Press 'r' to remove this filter",
+			view.ColumnName(currentColumn), opts.Operator, opts.Query, view.FilterCount())
 	}
 
 	// Show summary if cursor is not on a filtered column
-	return fmt.Sprintf("🔎 %d filters active  |  Navigate to filtered column and press 'r' to remove", len(activeFilters))
+	return fmt.Sprintf("🔎 %d filters active  |  Navigate to filtered column and press 'r' to remove", view.FilterCount())
 }
 
 // add buffer data to buffer table
@@ -69,11 +70,9 @@ func drawBuffer(b *Buffer, t *tview.Table) {
 				alignment = tview.AlignCenter
 
 				// Add filter indicator if this column has a filter applied
-				if isFiltered {
-					if _, hasFilter := activeFilters[c]; hasFilter {
-						cellText = "🔎 " + cellText + " 🔎"
-						backgroundColor = tcell.NewRGBColor(255, 100, 0) // Orange background for filtered column
-					}
+				if _, hasFilter := view.FilterAt(c); hasFilter {
+					cellText = "🔎 " + cellText + " 🔎"
+					backgroundColor = tcell.NewRGBColor(255, 100, 0) // Orange background for filtered column
 				}
 			} else if isHeaderCol {
 				// Frozen column: gold color for row headers
@@ -82,22 +81,12 @@ func drawBuffer(b *Buffer, t *tview.Table) {
 			}
 
 			// Check if this cell is a search result and highlight it
-			isSearchMatch := false
-			if searchQuery != "" && len(searchResults) > 0 {
-				for _, result := range searchResults {
-					if result.Row == r && result.Col == c {
-						isSearchMatch = true
-						break
-					}
-				}
-			}
+			isSearchMatch, isCurrentMatch := view.MatchAt(r, c)
 
 			// Modern search match highlighting (overrides header styling)
 			if isSearchMatch {
 				// Check if this is the current search result
-				if currentSearchIndex >= 0 && currentSearchIndex < len(searchResults) &&
-					searchResults[currentSearchIndex].Row == r &&
-					searchResults[currentSearchIndex].Col == c {
+				if isCurrentMatch {
 					// Current match: vibrant cyan highlight
 					backgroundColor = tcell.NewRGBColor(0, 180, 216)
 					color = tcell.ColorBlack
@@ -112,7 +101,7 @@ func drawBuffer(b *Buffer, t *tview.Table) {
 
 			// Determine max width for this column
 			maxWidth := 0
-			if width, isWrapped := wrappedColumns[c]; isWrapped {
+			if width, isWrapped := view.ColumnWidth(c); isWrapped {
 				maxWidth = width
 				// Truncate text if it exceeds max width
 				cellText = truncateText(cellText, maxWidth)
@@ -166,7 +155,7 @@ func drawStats(s statsSummary, t *tview.Table) {
 }
 
 // draw app UI
-func drawUI(b *Buffer) error {
+func drawUI() error {
 
 	//bufferTable init with modern styling
 	bufferTable = tview.NewTable()
@@ -174,7 +163,8 @@ func drawUI(b *Buffer) error {
 	bufferTable.SetBorders(false)
 	bufferTable.SetSeparator(tview.Borders.Vertical)             // Add subtle vertical separators
 	bufferTable.SetBordersColor(tcell.NewRGBColor(60, 100, 140)) // Subtle blue borders
-	bufferTable.SetFixed(b.rowFreeze, b.colFreeze)
+	rowFreeze, colFreeze := view.Freeze()
+	bufferTable.SetFixed(rowFreeze, colFreeze)
 	bufferTable.Select(0, 0)
 	bufferTable.SetSelectedStyle(tcell.Style{}.
 		Foreground(tcell.ColorWhite).
@@ -182,9 +172,9 @@ func drawUI(b *Buffer) error {
 		Attributes(tcell.AttrBold))
 
 	// Auto-detect and wrap long columns (sample first 100 rows, threshold 50 characters)
-	detectAndWrapLongColumns(b, 100, 50)
+	view.DetectWideColumns(100, 50)
 
-	drawBuffer(b, bufferTable)
+	redraw()
 
 	//main page init with modern styling
 	cursorPosStr = buildCursorPosStr(0, 0) //footer right
@@ -213,7 +203,7 @@ func drawUI(b *Buffer) error {
 		mainPage.Clear()
 
 		// Add filter info strip at top if filter is active and cursor on filtered column
-		filterInfoStr := buildFilterInfoStr(currentCursorColumn)
+		filterInfoStr := buildFilterInfoStr(view.CursorColumn())
 		if filterInfoStr != "" {
 			mainPage.AddText(filterInfoStr, true, tview.AlignCenter, tcell.NewRGBColor(255, 140, 0))
 		}
@@ -237,7 +227,7 @@ func drawUI(b *Buffer) error {
 		}
 
 		// Update current cursor column
-		currentCursorColumn = column
+		view.SetCursorColumn(column)
 
 		cursorPosStr = buildCursorPosStr(row, column)
 
@@ -270,7 +260,7 @@ func drawUI(b *Buffer) error {
 		// l - move right
 		if event.Key() == tcell.KeyRune && event.Rune() == 'l' {
 			row, col := bufferTable.GetSelection()
-			if col < b.colLen-1 {
+			if col < visibleCols()-1 {
 				bufferTable.Select(row, col+1)
 			}
 			return nil
@@ -279,7 +269,7 @@ func drawUI(b *Buffer) error {
 		// j - move down
 		if event.Key() == tcell.KeyRune && event.Rune() == 'j' {
 			row, col := bufferTable.GetSelection()
-			if row < b.rowLen-1 {
+			if row < visibleRows()-1 {
 				bufferTable.Select(row+1, col)
 			}
 			return nil
@@ -296,25 +286,17 @@ func drawUI(b *Buffer) error {
 
 		// gg - go to first row
 		if event.Key() == tcell.KeyRune && event.Rune() == 'g' {
-			if lastKeyWasG {
+			if pressedGTwice() {
 				bufferTable.Select(0, 0)
 				bufferTable.ScrollToBeginning()
-				lastKeyWasG = false
-				return nil
 			}
-			lastKeyWasG = true
-			// Set a timer to reset lastKeyWasG after a short delay
-			go func() {
-				time.Sleep(500 * time.Millisecond)
-				lastKeyWasG = false
-			}()
 			return nil
 		}
 
 		// G - go to last row
 		if event.Key() == tcell.KeyRune && event.Rune() == 'G' {
 			_, col := bufferTable.GetSelection()
-			bufferTable.Select(b.rowLen-1, col)
+			bufferTable.Select(visibleRows()-1, col)
 			bufferTable.ScrollToEnd()
 			return nil
 		}
@@ -323,8 +305,8 @@ func drawUI(b *Buffer) error {
 		if event.Key() == tcell.KeyCtrlD {
 			row, col := bufferTable.GetSelection()
 			newRow := row + 10 // Move 10 rows down
-			if newRow >= b.rowLen {
-				newRow = b.rowLen - 1
+			if rows := visibleRows(); newRow >= rows {
+				newRow = rows - 1
 			}
 			bufferTable.Select(newRow, col)
 			return nil
@@ -351,14 +333,14 @@ func drawUI(b *Buffer) error {
 		// $ - go to last column
 		if event.Key() == tcell.KeyRune && event.Rune() == '$' {
 			row, _ := bufferTable.GetSelection()
-			bufferTable.Select(row, b.colLen-1)
+			bufferTable.Select(row, visibleCols()-1)
 			return nil
 		}
 
 		// w - move to next column (word forward)
 		if event.Key() == tcell.KeyRune && event.Rune() == 'w' {
 			row, col := bufferTable.GetSelection()
-			if col < b.colLen-1 {
+			if col < visibleCols()-1 {
 				bufferTable.Select(row, col+1)
 			}
 			return nil
@@ -378,9 +360,7 @@ func drawUI(b *Buffer) error {
 			// Create search form
 			form := tview.NewForm()
 			form.AddInputField("Search:", "", 40, nil, nil)
-			form.AddCheckbox("Use Regex:", searchUseRegex, func(checked bool) {
-				searchUseRegex = checked
-			})
+			form.AddCheckbox("Use Regex:", view.SearchSpec().Operator == opRegex, nil)
 			form.AddCheckbox("Case Sensitive:", false, nil)
 			form.GetFormItem(1).(*tview.Checkbox).SetLabelColor(tcell.NewRGBColor(180, 220, 220))
 			form.GetFormItem(2).(*tview.Checkbox).SetLabelColor(tcell.NewRGBColor(180, 220, 220))
@@ -393,28 +373,28 @@ func drawUI(b *Buffer) error {
 				useRegex := form.GetFormItem(1).(*tview.Checkbox).IsChecked()
 				caseSensitive := form.GetFormItem(2).(*tview.Checkbox).IsChecked()
 				if query != "" {
-					searchQuery = query
-					searchUseRegex = useRegex
-					searchResults = performSearch(b, query, useRegex, caseSensitive)
+					operator := opContains
+					if useRegex {
+						operator = opRegex
+					}
+					found := view.Search(MatchSpec{Query: query, Operator: operator, CaseSensitive: caseSensitive})
 
-					if len(searchResults) > 0 {
-						currentSearchIndex = 0
-						bufferTable.Select(searchResults[0].Row, searchResults[0].Col)
-						drawBuffer(b, bufferTable)
+					if found > 0 {
+						if match, ok := view.CurrentMatch(); ok {
+							bufferTable.Select(match.Row, match.Col)
+						}
+						redraw()
 						searchMode := "matches"
 						if useRegex {
 							searchMode = "regex matches"
 						}
 						drawFooterText(fileNameStr,
-							fmt.Sprintf("Found %d %s (1/%d)", len(searchResults), searchMode, len(searchResults)),
+							fmt.Sprintf("Found %d %s (1/%d)", found, searchMode, found),
 							cursorPosStr)
+					} else if useRegex {
+						drawFooterText(fileNameStr, "Invalid regex or no matches found", cursorPosStr)
 					} else {
-						currentSearchIndex = -1
-						if useRegex {
-							drawFooterText(fileNameStr, "Invalid regex or no matches found", cursorPosStr)
-						} else {
-							drawFooterText(fileNameStr, "No matches found", cursorPosStr)
-						}
+						drawFooterText(fileNameStr, "No matches found", cursorPosStr)
 					}
 				}
 				UI.HidePage("searchModal")
@@ -468,7 +448,7 @@ func drawUI(b *Buffer) error {
 			})
 
 			// Create centered modal overlay
-			searchModal = tview.NewFlex().
+			searchModal := tview.NewFlex().
 				AddItem(nil, 0, 1, false).
 				AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
 					AddItem(nil, 0, 1, false).
@@ -484,14 +464,13 @@ func drawUI(b *Buffer) error {
 
 		// Navigate to next search result
 		if event.Key() == tcell.KeyRune && event.Rune() == 'n' {
-			if len(searchResults) > 0 && currentSearchIndex >= 0 {
-				currentSearchIndex = (currentSearchIndex + 1) % len(searchResults)
-				bufferTable.Select(searchResults[currentSearchIndex].Row, searchResults[currentSearchIndex].Col)
-				drawBuffer(b, bufferTable) // Redraw to update highlighting
+			if match, ok := view.NextMatch(); ok {
+				bufferTable.Select(match.Row, match.Col)
+				redraw() // Redraw to update highlighting
 				drawFooterText(fileNameStr,
-					fmt.Sprintf("Match %d/%d", currentSearchIndex+1, len(searchResults)),
+					fmt.Sprintf("Match %d/%d", view.MatchIndex(), view.MatchCount()),
 					cursorPosStr)
-			} else if searchQuery != "" {
+			} else if view.Searching() {
 				drawFooterText(fileNameStr, "No search results. Press / to search", cursorPosStr)
 			}
 			return nil
@@ -499,17 +478,13 @@ func drawUI(b *Buffer) error {
 
 		// Navigate to previous search result
 		if event.Key() == tcell.KeyRune && event.Rune() == 'N' {
-			if len(searchResults) > 0 && currentSearchIndex >= 0 {
-				currentSearchIndex--
-				if currentSearchIndex < 0 {
-					currentSearchIndex = len(searchResults) - 1
-				}
-				bufferTable.Select(searchResults[currentSearchIndex].Row, searchResults[currentSearchIndex].Col)
-				drawBuffer(b, bufferTable) // Redraw to update highlighting
+			if match, ok := view.PrevMatch(); ok {
+				bufferTable.Select(match.Row, match.Col)
+				redraw() // Redraw to update highlighting
 				drawFooterText(fileNameStr,
-					fmt.Sprintf("Match %d/%d", currentSearchIndex+1, len(searchResults)),
+					fmt.Sprintf("Match %d/%d", view.MatchIndex(), view.MatchCount()),
 					cursorPosStr)
-			} else if searchQuery != "" {
+			} else if view.Searching() {
 				drawFooterText(fileNameStr, "No search results. Press / to search", cursorPosStr)
 			}
 			return nil
@@ -517,11 +492,9 @@ func drawUI(b *Buffer) error {
 
 		// Escape - clear search highlighting
 		if event.Key() == tcell.KeyEscape {
-			if searchQuery != "" {
-				searchQuery = ""
-				searchResults = []SearchResult{}
-				currentSearchIndex = -1
-				drawBuffer(b, bufferTable)
+			if view.Searching() {
+				view.ClearSearch()
+				redraw()
 				drawFooterText(fileNameStr, "Search cleared", cursorPosStr)
 			}
 			return nil
@@ -535,14 +508,14 @@ func drawUI(b *Buffer) error {
 			filterForm := tview.NewForm()
 
 			// Operator selection
-			operators := []string{"contains", "equals", "starts with", "ends with", "regex", ">", "<", ">=", "<="}
+			operators := matchOperators
 			selectedOperatorIndex := 0
 
 			// Value input
 			query := ""
 			caseSensitive := false
 
-			if opts, exists := activeFilters[column]; exists {
+			if opts, exists := view.FilterAt(column); exists {
 				query = opts.Query
 				caseSensitive = opts.CaseSensitive
 				for i, op := range operators {
@@ -571,68 +544,30 @@ func drawUI(b *Buffer) error {
 					drawFooterText(fileNameStr, "Filtering...", cursorPosStr)
 					app.ForceDraw()
 
-					// Add or update filter for this column
-					activeFilters[column] = FilterOptions{
+					rows, kept := view.ApplyFilter(column, FilterOptions{
 						Query:         query,
 						Operator:      operator,
 						CaseSensitive: caseSensitive,
-					}
-
-					// Apply all filters starting from original buffer
-					if originalBuffer == nil {
-						originalBuffer = b // Save original buffer first time
-					}
-
-					// Start with original buffer and apply all filters sequentially
-					filteredBuffer := originalBuffer
-					for col, opts := range activeFilters {
-						filteredBuffer = filteredBuffer.filterByColumn(col, opts)
-					}
-
-					// Update display with filtered data
-					if filteredBuffer.rowLen <= filteredBuffer.rowFreeze {
-						drawFooterText(fileNameStr, "No rows match filters", cursorPosStr)
-						// Remove this filter since it results in no data
-						delete(activeFilters, column)
-					} else {
-						// Replace current buffer with filtered buffer
-						b = filteredBuffer
-						isFiltered = true
-
-						drawBuffer(b, bufferTable)
+					})
+					if kept {
+						redraw()
 						bufferTable.Select(0, column) // Stay at same column, go to first row
-						matchCount := b.rowLen - b.rowFreeze
 						drawFooterText(fileNameStr,
-							fmt.Sprintf("Filtered: %d rows match (%d filters active, r to reset)", matchCount, len(activeFilters)),
+							fmt.Sprintf("Filtered: %d rows match (%d filters active, r to reset)", rows, view.FilterCount()),
 							cursorPosStr)
+					} else {
+						drawFooterText(fileNameStr, "No rows match filters", cursorPosStr)
 					}
-				} else {
-					// Empty query means remove filter for this column
-					if _, exists := activeFilters[column]; exists {
-						delete(activeFilters, column)
-
-						// Reapply remaining filters
-						if len(activeFilters) == 0 {
-							// No more filters, restore original
-							b = originalBuffer
-							isFiltered = false
-							drawBuffer(b, bufferTable)
-							bufferTable.Select(0, column) // Stay at same column
-							drawFooterText(fileNameStr, "All filters cleared - showing all rows", cursorPosStr)
-						} else {
-							// Apply remaining filters
-							filteredBuffer := originalBuffer
-							for col, opts := range activeFilters {
-								filteredBuffer = filteredBuffer.filterByColumn(col, opts)
-							}
-							b = filteredBuffer
-							drawBuffer(b, bufferTable)
-							bufferTable.Select(0, column) // Stay at same column
-							matchCount := b.rowLen - b.rowFreeze
-							drawFooterText(fileNameStr,
-								fmt.Sprintf("Filter removed: %d rows match (%d filters active)", matchCount, len(activeFilters)),
-								cursorPosStr)
-						}
+				} else if view.ClearFilter(column) {
+					// An empty query removes this column's filter.
+					redraw()
+					bufferTable.Select(0, column) // Stay at same column
+					if view.Filtered() {
+						drawFooterText(fileNameStr,
+							fmt.Sprintf("Filter removed: %d rows match (%d filters active)", view.DataRows(), view.FilterCount()),
+							cursorPosStr)
+					} else {
+						drawFooterText(fileNameStr, "All filters cleared - showing all rows", cursorPosStr)
 					}
 				}
 				UI.HidePage("filterModal")
@@ -648,7 +583,7 @@ func drawUI(b *Buffer) error {
 			filterForm.SetBorder(true)
 
 			filterTitle := fmt.Sprintf(" 🔎 Filter Column %d - Enter to filter, Esc to cancel ", column)
-			if _, exists := activeFilters[column]; exists {
+			if _, exists := view.FilterAt(column); exists {
 				filterTitle = fmt.Sprintf(" 🔎 Edit Filter for Column %d (empty value to remove) - Enter to apply, Esc to cancel ", column)
 			}
 			filterForm.SetTitle(filterTitle)
@@ -716,38 +651,20 @@ func drawUI(b *Buffer) error {
 
 		// r - reset filter for current column
 		if event.Key() == tcell.KeyRune && event.Rune() == 'r' {
-			if isFiltered && originalBuffer != nil {
+			if view.Filtered() {
 				row, column := bufferTable.GetSelection()
 
-				// Check if current column has a filter
-				if _, hasFilter := activeFilters[column]; hasFilter {
-					// Remove filter for this column
-					delete(activeFilters, column)
-
-					// Reapply remaining filters
-					if len(activeFilters) == 0 {
-						// No more filters, restore original
-						b = originalBuffer
-						isFiltered = false
-						drawBuffer(b, bufferTable)
-						bufferTable.Select(row, column)
-						drawFooterText(fileNameStr, "All filters cleared - showing all rows", cursorPosStr)
-					} else {
-						// Apply remaining filters
-						filteredBuffer := originalBuffer
-						for col, opts := range activeFilters {
-							filteredBuffer = filteredBuffer.filterByColumn(col, opts)
-						}
-						b = filteredBuffer
-						drawBuffer(b, bufferTable)
-						bufferTable.Select(row, column)
-						matchCount := b.rowLen - b.rowFreeze
+				if view.ClearFilter(column) {
+					redraw()
+					bufferTable.Select(row, column)
+					if view.Filtered() {
 						drawFooterText(fileNameStr,
-							fmt.Sprintf("Filter removed from current column: %d rows match (%d filters active)", matchCount, len(activeFilters)),
+							fmt.Sprintf("Filter removed from current column: %d rows match (%d filters active)", view.DataRows(), view.FilterCount()),
 							cursorPosStr)
+					} else {
+						drawFooterText(fileNameStr, "All filters cleared - showing all rows", cursorPosStr)
 					}
-				} else if len(activeFilters) > 0 {
-					// Current column doesn't have a filter, but others do
+				} else {
 					drawFooterText(fileNameStr, "Current column has no filter - navigate to filtered column to remove", cursorPosStr)
 				}
 			}
@@ -759,16 +676,8 @@ func drawUI(b *Buffer) error {
 			_, column := bufferTable.GetSelection()
 			drawFooterText(fileNameStr, "Sorting...", cursorPosStr)
 			app.ForceDraw()
-			colType := b.getColType(column)
-			switch colType {
-			case colTypeFloat:
-				b.sortByNum(column, false)
-			case colTypeDate:
-				b.sortByDate(column, false)
-			default:
-				b.sortByStr(column, false)
-			}
-			drawBuffer(b, bufferTable)
+			view.SortBy(column, false)
+			redraw()
 			drawFooterText(fileNameStr, "All Done", cursorPosStr)
 		}
 
@@ -777,16 +686,8 @@ func drawUI(b *Buffer) error {
 			_, column := bufferTable.GetSelection()
 			drawFooterText(fileNameStr, "Sorting...", cursorPosStr)
 			app.ForceDraw()
-			colType := b.getColType(column)
-			switch colType {
-			case colTypeFloat:
-				b.sortByNum(column, true)
-			case colTypeDate:
-				b.sortByDate(column, true)
-			default:
-				b.sortByStr(column, true)
-			}
-			drawBuffer(b, bufferTable)
+			view.SortBy(column, true)
+			redraw()
 			drawFooterText(fileNameStr, "All Done", cursorPosStr)
 		}
 
@@ -796,22 +697,21 @@ func drawUI(b *Buffer) error {
 			drawFooterText(fileNameStr, "Calculating statistics...", cursorPosStr)
 			app.ForceDraw()
 
-			// Use the current buffer (which is filtered if filters are active)
-			// This ensures stats are calculated only on visible/filtered data
-			currentBuffer := b
-
+			// The view's visible buffer is the filtered one when filters are
+			// active, so stats are calculated only on the rows on screen.
 			var statsS statsSummary
-			summaryArray := currentBuffer.getCol(column)
-			columnName := "Column " + I2S(column)
+			summaryArray := view.Visible().getCol(column)
+			columnName := view.ColumnName(column)
 
-			// Get column name from header if available
-			if currentBuffer.rowFreeze > 0 && len(currentBuffer.cont) > 0 && column < len(currentBuffer.cont[0]) {
-				columnName = currentBuffer.cont[0][column]
-				summaryArray = summaryArray[1:]
+			// Drop the header row from the sample when there is one.
+			if rowFreeze, _ := view.Freeze(); rowFreeze > 0 && len(summaryArray) >= rowFreeze {
+				summaryArray = summaryArray[rowFreeze:]
 			}
 
+			colType := view.ColType(column)
+
 			// Determine statistics type
-			if currentBuffer.getColType(column) == colTypeFloat {
+			if colType == colTypeFloat {
 				statsS = &ContinuousStats{}
 			} else {
 				statsS = &DiscreteStats{}
@@ -819,7 +719,7 @@ func drawUI(b *Buffer) error {
 			statsS.summary(summaryArray)
 
 			// Show statistics as a modal dialog with filter indication
-			showStatsDialog(statsS, columnName, currentBuffer.getColType(column))
+			showStatsDialog(statsS, columnName, colType)
 			drawFooterText(fileNameStr, "All Done", cursorPosStr)
 			return nil
 		}
@@ -827,22 +727,9 @@ func drawUI(b *Buffer) error {
 		// t - toggle/change column data type (t for type)
 		if event.Key() == tcell.KeyRune && event.Rune() == 't' {
 			row, column := bufferTable.GetSelection()
-			currentType := b.getColType(column)
 
 			// Cycle through types: Str -> Num -> Date -> Str
-			var newType int
-			switch currentType {
-			case colTypeStr:
-				newType = colTypeFloat
-			case colTypeFloat:
-				newType = colTypeDate
-			case colTypeDate:
-				newType = colTypeStr
-			default:
-				newType = colTypeStr
-			}
-
-			b.setColType(column, newType)
+			view.CycleColType(column)
 			cursorPosStr = buildCursorPosStr(row, column)
 			drawFooterText(fileNameStr, statusMessage, cursorPosStr)
 		}
@@ -851,19 +738,14 @@ func drawUI(b *Buffer) error {
 		if event.Key() == tcell.KeyRune && event.Rune() == 'W' {
 			_, column := bufferTable.GetSelection()
 
-			if _, isWrapped := wrappedColumns[column]; isWrapped {
-				// Unwrap: remove from wrapped columns
-				delete(wrappedColumns, column)
-				drawFooterText(fileNameStr, "Column width limit removed", cursorPosStr)
-			} else {
-				// Wrap: add to wrapped columns with default width
-				width := getColumnMaxWidth(column)
-				wrappedColumns[column] = width
+			if width, limited := view.ToggleWrap(column); limited {
 				drawFooterText(fileNameStr, fmt.Sprintf("Column width limited to %d chars", width), cursorPosStr)
+			} else {
+				drawFooterText(fileNameStr, "Column width limit removed", cursorPosStr)
 			}
 
 			// Redraw the table with updated wrapping
-			drawBuffer(b, bufferTable)
+			redraw()
 			return nil
 		}
 
@@ -899,7 +781,7 @@ func drawUI(b *Buffer) error {
 			return action, event
 		case tview.MouseScrollDown:
 			row, col := bufferTable.GetSelection()
-			if row < b.rowLen-1 {
+			if row < visibleRows()-1 {
 				bufferTable.Select(row+1, col)
 			}
 			return action, event
@@ -959,16 +841,9 @@ func showHelpDialog() {
 		}
 		// gg - go to top
 		if event.Key() == tcell.KeyRune && event.Rune() == 'g' {
-			if lastKeyWasG {
+			if pressedGTwice() {
 				helpText.ScrollToBeginning()
-				lastKeyWasG = false
-				return nil
 			}
-			lastKeyWasG = true
-			go func() {
-				time.Sleep(500 * time.Millisecond)
-				lastKeyWasG = false
-			}()
 			return nil
 		}
 		// G - go to bottom
@@ -1010,7 +885,7 @@ func showHelpDialog() {
 }
 
 // showStatsDialog displays column statistics as a centered modal dialog
-func showStatsDialog(statsS statsSummary, columnName string, colType int) {
+func showStatsDialog(statsS statsSummary, columnName string, colType ColumnType) {
 	// Create stats table
 	statsTable := tview.NewTable()
 	statsTable.SetSelectable(true, true)
@@ -1028,8 +903,8 @@ func showStatsDialog(statsS statsSummary, columnName string, colType int) {
 	title := fmt.Sprintf(" 📊 Statistics: %s [%s] ", columnName, typeName)
 
 	// Add filter indicator if data is filtered
-	if isFiltered && len(activeFilters) > 0 {
-		title = fmt.Sprintf(" 📊 Statistics: %s [%s] (Filtered Data - %d filters active) ", columnName, typeName, len(activeFilters))
+	if view.Filtered() {
+		title = fmt.Sprintf(" 📊 Statistics: %s [%s] (Filtered Data - %d filters active) ", columnName, typeName, view.FilterCount())
 	}
 
 	statsTable.SetTitle(title)
@@ -1062,18 +937,11 @@ func showStatsDialog(statsS statsSummary, columnName string, colType int) {
 
 		// gg - go to top
 		if event.Key() == tcell.KeyRune && event.Rune() == 'g' {
-			if lastKeyWasG {
+			if pressedGTwice() {
 				_, column := statsTable.GetSelection()
 				statsTable.Select(0, column)
 				statsTable.ScrollToBeginning()
-				lastKeyWasG = false
-				return nil
 			}
-			lastKeyWasG = true
-			go func() {
-				time.Sleep(500 * time.Millisecond)
-				lastKeyWasG = false
-			}()
 			return nil
 		}
 

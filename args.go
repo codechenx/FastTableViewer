@@ -25,3 +25,27 @@ func (args *Args) setDefault() {
 	args.Strict = false
 	args.AsyncLoad = true // default to async loading
 }
+
+// intakeConfig snapshots the CLI flags as the immutable rules for one load.
+// Intake never writes to the result, so loading twice behaves the same twice;
+// the loaders used to decrement SkipNum on the shared Args as they read.
+func (args Args) intakeConfig() IntakeConfig {
+	sep := args.Sep
+	if sep == "\\t" {
+		sep = "\t"
+	}
+	var r rune
+	if runes := []rune(sep); len(runes) > 0 {
+		r = runes[0]
+	}
+
+	return IntakeConfig{
+		Sep:        r,
+		SkipPrefix: args.SkipSymbol,
+		SkipLines:  args.SkipNum,
+		MaxLines:   args.NLine,
+		ShowCols:   args.ShowNum,
+		HideCols:   args.HideNum,
+		Strict:     args.Strict,
+	}
+}

@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"strconv"
 
 	"github.com/fatih/color"
@@ -223,144 +222,30 @@ func truncateText(text string, maxWidth int) string {
 	return string(runes[:maxWidth-3]) + "..."
 }
 
-// getColumnMaxWidth determines the maximum width for a column
-func getColumnMaxWidth(colIndex int) int {
-	// Default wrap width (50 characters for long columns)
-	defaultWidth := 50
-
-	// Check if custom width is set
-	if width, exists := wrappedColumns[colIndex]; exists {
-		return width
-	}
-
-	return defaultWidth
-}
-
-// detectAndWrapLongColumns automatically enables wrapping for columns with long content
-// Analyzes first N rows to detect if columns have text longer than threshold
-func detectAndWrapLongColumns(b *Buffer, sampleSize int, threshold int) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	// Determine how many rows to sample
-	maxSample := sampleSize
-	if b.rowLen < maxSample {
-		maxSample = b.rowLen
-	}
-
-	// Skip header row in analysis if it exists
-	startRow := 0
-	if b.rowFreeze > 0 {
-		startRow = b.rowFreeze
-	}
-
-	// Track maximum length found in each column
-	maxLengths := make([]int, b.colLen)
-
-	// Sample rows to find maximum content length per column
-	for r := startRow; r < maxSample; r++ {
-		for c := 0; c < b.colLen; c++ {
-			if c < len(b.cont[r]) {
-				cellLen := len(b.cont[r][c])
-				if cellLen > maxLengths[c] {
-					maxLengths[c] = cellLen
-				}
-			}
-		}
-	}
-
-	// Enable wrapping for columns that exceed threshold
-	for c := 0; c < b.colLen; c++ {
-		if maxLengths[c] > threshold {
-			// Only set if not already manually configured
-			if _, exists := wrappedColumns[c]; !exists {
-				wrappedColumns[c] = getColumnMaxWidth(c)
-			}
-		}
-	}
-}
-
-// performSearch searches for a query string in the buffer and stores results
-// Supports both plain text and regex search modes
-func performSearch(b *Buffer, query string, useRegex bool, caseSensitive bool) []SearchResult {
+// performSearch returns every cell in b matching spec. The matcher is compiled
+// once for the whole scan; an unusable pattern yields no results.
+func performSearch(b *Buffer, spec MatchSpec) []SearchResult {
 	results := []SearchResult{}
 
+	matcher, err := CompileMatcher(spec, colTypeStr)
+	if err != nil {
+		return results
+	}
+
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	// Compile regex if in regex mode
-	var re *regexp.Regexp
-	var err error
-	if useRegex {
-		if !caseSensitive {
-			query = "(?i)" + query
-		}
-		re, err = regexp.Compile(query)
-		if err != nil {
-			// If regex is invalid, return empty results
-			return results
-		}
-	} else if !caseSensitive {
-		// For non-regex, convert to lowercase for case-insensitive search
-		query = toLower(query)
-	}
-
-	// Scan column by column (same column first, then next column)
+	// Scan column by column (same column first, then next column).
 	for c := 0; c < b.colLen; c++ {
 		for r := 0; r < b.rowLen; r++ {
-			cellText := b.cont[r][c]
-
-			var matches bool
-			if useRegex {
-				matches = re.MatchString(cellText)
-			} else {
-				if caseSensitive {
-					matches = stringContains(cellText, query)
-				} else {
-					matches = stringContains(toLower(cellText), query)
-				}
+			if c >= len(b.cont[r]) {
+				continue
 			}
-
-			if matches {
+			if matcher.MatchCell(b.cont[r][c]) {
 				results = append(results, SearchResult{Row: r, Col: c})
 			}
 		}
 	}
 
 	return results
-}
-
-// toLower converts a string to lowercase
-func toLower(s string) string {
-	runes := []rune(s)
-	for i, r := range runes {
-		if r >= 'A' && r <= 'Z' {
-			runes[i] = r + 32
-		}
-	}
-	return string(runes)
-}
-
-// stringContains checks if s contains substr
-func stringContains(s, substr string) bool {
-	if len(substr) == 0 {
-		return true
-	}
-	if len(substr) > len(s) {
-		return false
-	}
-
-	for i := 0; i <= len(s)-len(substr); i++ {
-		match := true
-		for j := 0; j < len(substr); j++ {
-			if s[i+j] != substr[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true
-		}
-	}
-	return false
 }

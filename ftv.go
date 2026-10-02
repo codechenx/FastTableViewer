@@ -1,13 +1,18 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
 )
+
+// errNoInput means neither a file argument nor piped input was supplied.
+var errNoInput = errors.New("no input")
 
 func main() {
 	initView()
@@ -16,309 +21,7 @@ func main() {
 		Use:     "ftv {File_Name}",
 		Version: "0.8",
 		Short:   "Fast table viewer for delimited file in terminal",
-		Run: func(cmd *cobra.Command, cmdargs []string) {
-			if args.Sep == "\\t" {
-				args.Sep = "	"
-			}
-			if len([]rune(args.Sep)) > 0 {
-				b.sep = []rune(args.Sep)[0]
-			}
-			info, err := os.Stdin.Stat()
-			fatalError(err)
-
-			// Determine if we should use async loading
-			useAsync := args.AsyncLoad
-
-			//check whether from a console pipe
-			if info.Mode()&os.ModeCharDevice != 0 {
-				if len(cmdargs) < 1 {
-					stopView()
-					_ = cmd.Help()
-					return
-				}
-				//get file name form console
-				args.FileName = cmdargs[0]
-
-				// Check if file exists before attempting to load
-				if _, err := os.Stat(args.FileName); os.IsNotExist(err) {
-					stopView()
-					fmt.Printf("⚠️  File not found: %s\n", args.FileName)
-					os.Exit(1)
-				} else if err != nil {
-					stopView()
-					fmt.Printf("⚠️  Cannot access file: %s\n", err)
-					os.Exit(1)
-				}
-
-				if useAsync {
-					// Start async loading
-					userMovedCursor = false // Reset cursor tracking
-					updateChan := make(chan bool, 10)
-					doneChan := make(chan error, 1)
-					go loadFileToBufferAsync(args.FileName, b, updateChan, doneChan)
-
-					// Wait for initial data or error
-					select {
-					case <-updateChan:
-						// Initial data ready
-					case err := <-doneChan:
-						// Error during initial loading
-						fatalError(err)
-						return
-					}
-
-					// Process freeze mode
-					switch args.Header {
-					case -1:
-						b.rowFreeze, b.colFreeze = 0, 0
-					case 0:
-						b.rowFreeze, b.colFreeze = 1, 1
-					case 1:
-						b.rowFreeze, b.colFreeze = 1, 0
-					case 2:
-						b.rowFreeze, b.colFreeze = 0, 1
-					}
-
-					// Check if file is empty (no data rows)
-					dataRows := b.rowLen - b.rowFreeze
-					if b.rowLen == 0 || dataRows <= 0 {
-						stopView()
-						if b.rowLen == 0 {
-							fmt.Println("⚠️  File is empty (no rows)")
-						} else {
-							fmt.Println("⚠️  File is empty (only header, no data rows)")
-						}
-						os.Exit(0)
-					}
-
-					// Draw initial UI
-					err = drawUI(b)
-					fatalError(err)
-
-					// Start update handler in background
-					go func() {
-						ticker := time.NewTicker(20 * time.Millisecond)
-						defer ticker.Stop()
-
-						loadComplete := false
-						for !loadComplete {
-							select {
-							case <-updateChan:
-								// Update available - will be handled by ticker
-							case err := <-doneChan:
-								loadComplete = true
-								if err != nil {
-									fatalError(err)
-								}
-								// Final update
-								app.QueueUpdateDraw(func() {
-									drawBuffer(b, bufferTable)
-									updateFooterWithStatus("Loaded " + strconv.Itoa(b.rowLen) + " rows")
-								})
-							case <-ticker.C:
-								// Periodic UI update
-								app.QueueUpdateDraw(func() {
-									drawBuffer(b, bufferTable)
-
-									// Keep cursor on first row if user hasn't moved it
-									if !userMovedCursor {
-										row, col := bufferTable.GetSelection()
-										if row != 0 {
-											bufferTable.Select(0, col)
-										}
-									}
-
-									if loadProgress.TotalBytes > 0 {
-										// Show percentage for files
-										percent := loadProgress.GetPercentage()
-										updateFooterWithStatus(fmt.Sprintf("Loading... %.1f%%", percent))
-									} else {
-										// Show row count for pipes (no file size)
-										updateFooterWithStatus("Loading... " + strconv.Itoa(b.rowLen) + " rows")
-									}
-								})
-							}
-						}
-					}()
-
-					if !debug {
-						if err = app.SetRoot(UI, true).SetFocus(UI).Run(); err != nil {
-							fatalError(err)
-						}
-					}
-				} else {
-					// Synchronous loading (original behavior)
-					err = loadFileToBuffer(args.FileName, b)
-					fatalError(err)
-
-					//process freeze mode
-					switch args.Header {
-					case -1:
-						b.rowFreeze, b.colFreeze = 0, 0
-					case 0:
-						b.rowFreeze, b.colFreeze = 1, 1
-					case 1:
-						b.rowFreeze, b.colFreeze = 1, 0
-					case 2:
-						b.rowFreeze, b.colFreeze = 0, 1
-					}
-
-					// Check if file is empty (no data rows)
-					dataRows := b.rowLen - b.rowFreeze
-					if b.rowLen == 0 || dataRows <= 0 {
-						stopView()
-						if b.rowLen == 0 {
-							fmt.Println("⚠️  File is empty (no rows)")
-						} else {
-							fmt.Println("⚠️  File is empty (only header, no data rows)")
-						}
-						os.Exit(0)
-					}
-					err = drawUI(b)
-					fatalError(err)
-					if !debug {
-						if err = app.SetRoot(UI, true).SetFocus(UI).Run(); err != nil {
-							fatalError(err)
-						}
-					}
-				}
-			} else {
-				args.FileName = "From Shell Pipe"
-
-				if useAsync {
-					// Start async loading
-					userMovedCursor = false // Reset cursor tracking
-					updateChan := make(chan bool, 10)
-					doneChan := make(chan error, 1)
-					go loadPipeToBufferAsync(os.Stdin, b, updateChan, doneChan)
-
-					// Wait for initial data or error
-					select {
-					case <-updateChan:
-						// Initial data ready
-					case err := <-doneChan:
-						// Error during initial loading
-						fatalError(err)
-						return
-					}
-
-					// Process freeze mode
-					switch args.Header {
-					case -1:
-						b.rowFreeze, b.colFreeze = 0, 0
-					case 0:
-						b.rowFreeze, b.colFreeze = 1, 1
-					case 1:
-						b.rowFreeze, b.colFreeze = 1, 0
-					case 2:
-						b.rowFreeze, b.colFreeze = 0, 1
-					}
-
-					// Check if pipe is empty (no data rows)
-					dataRows := b.rowLen - b.rowFreeze
-					if b.rowLen == 0 || dataRows <= 0 {
-						stopView()
-						if b.rowLen == 0 {
-							fmt.Println("⚠️  No data received from pipe (empty input)")
-						} else {
-							fmt.Println("⚠️  No data received from pipe (only header, no data rows)")
-						}
-						os.Exit(0)
-					}
-
-					// Draw initial UI
-					err = drawUI(b)
-					fatalError(err)
-
-					// Start update handler in background
-					go func() {
-						ticker := time.NewTicker(20 * time.Millisecond)
-						defer ticker.Stop()
-
-						loadComplete := false
-						for !loadComplete {
-							select {
-							case <-updateChan:
-								// Update available - will be handled by ticker
-							case err := <-doneChan:
-								loadComplete = true
-								if err != nil {
-									fatalError(err)
-								}
-								// Final update
-								app.QueueUpdateDraw(func() {
-									drawBuffer(b, bufferTable)
-									updateFooterWithStatus("Loaded " + strconv.Itoa(b.rowLen) + " rows")
-								})
-							case <-ticker.C:
-								// Periodic UI update
-								app.QueueUpdateDraw(func() {
-									drawBuffer(b, bufferTable)
-
-									// Keep cursor on first row if user hasn't moved it
-									if !userMovedCursor {
-										row, col := bufferTable.GetSelection()
-										if row != 0 {
-											bufferTable.Select(0, col)
-										}
-									}
-
-									if loadProgress.TotalBytes > 0 {
-										// Show percentage for files
-										percent := loadProgress.GetPercentage()
-										updateFooterWithStatus(fmt.Sprintf("Loading... %.1f%%", percent))
-									} else {
-										// Show row count for pipes (no file size)
-										updateFooterWithStatus("Loading... " + strconv.Itoa(b.rowLen) + " rows")
-									}
-								})
-							}
-						}
-					}()
-
-					if !debug {
-						if err = app.SetRoot(UI, true).SetFocus(UI).Run(); err != nil {
-							fatalError(err)
-						}
-					}
-				} else {
-					// Synchronous loading (original behavior)
-					err = loadPipeToBuffer(os.Stdin, b)
-					fatalError(err)
-
-					//process freeze mode
-					switch args.Header {
-					case -1:
-						b.rowFreeze, b.colFreeze = 0, 0
-					case 0:
-						b.rowFreeze, b.colFreeze = 1, 1
-					case 1:
-						b.rowFreeze, b.colFreeze = 1, 0
-					case 2:
-						b.rowFreeze, b.colFreeze = 0, 1
-					}
-
-					// Check if pipe is empty (no data rows)
-					dataRows := b.rowLen - b.rowFreeze
-					if b.rowLen == 0 || dataRows <= 0 {
-						stopView()
-						if b.rowLen == 0 {
-							fmt.Println("⚠️  No data received from pipe (empty input)")
-						} else {
-							fmt.Println("⚠️  No data received from pipe (only header, no data rows)")
-						}
-						os.Exit(0)
-					}
-					err = drawUI(b)
-					fatalError(err)
-					if !debug {
-						if err = app.SetRoot(UI, true).SetFocus(UI).Run(); err != nil {
-							fatalError(err)
-						}
-					}
-				}
-			}
-		},
+		Run:     runViewer,
 	}
 
 	RootCmd.Flags().StringVarP(&args.Sep, "separator", "s", "", "Delimiter/separator character (use \\t for tab)")
@@ -333,4 +36,223 @@ func main() {
 	RootCmd.Flags().SortFlags = false
 	err := RootCmd.Execute()
 	fatalError(err)
+}
+
+// runViewer is the one startup path: resolve where the rows come from, load
+// them, then show them. Whether loading is progressive is a choice about when
+// to draw, not a second way to load.
+func runViewer(cmd *cobra.Command, cmdargs []string) {
+	src, piped, err := resolveSource(cmdargs)
+	if errors.Is(err, errNoInput) {
+		stopView()
+		_ = cmd.Help()
+		return
+	}
+	if err != nil {
+		stopView()
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Printf("⚠️  File not found: %s\n", cmdargs[0])
+		} else {
+			fmt.Printf("⚠️  Cannot access input: %s\n", err)
+		}
+		os.Exit(1)
+	}
+
+	if piped {
+		args.FileName = "From Shell Pipe"
+	} else {
+		args.FileName = src.Name
+	}
+
+	buf := view.Original()
+	applyFreezeMode(buf, args.Header)
+
+	intake := Intake{Source: src, Config: args.intakeConfig()}
+
+	if args.AsyncLoad {
+		loadProgressively(intake, buf, piped)
+		return
+	}
+	loadAndShow(intake, buf, piped)
+}
+
+// resolveSource decides where rows come from: the named file, or standard input
+// when something was piped in.
+func resolveSource(cmdargs []string) (Source, bool, error) {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return Source{}, false, err
+	}
+
+	// A character device on stdin means nothing was piped in, so a file
+	// argument is required.
+	if info.Mode()&os.ModeCharDevice != 0 {
+		if len(cmdargs) < 1 {
+			return Source{}, false, errNoInput
+		}
+		src, err := openFileSource(cmdargs[0])
+		return src, false, err
+	}
+
+	return pipeSource(os.Stdin), true, nil
+}
+
+// applyFreezeMode maps the --freeze flag onto the frozen row and column counts.
+// It runs before loading so that type detection and strict-mode messages see
+// the header the user asked for.
+func applyFreezeMode(b *Buffer, mode int) {
+	rows, cols := 1, 1
+	switch mode {
+	case -1:
+		rows, cols = 0, 0
+	case 1:
+		rows, cols = 1, 0
+	case 2:
+		rows, cols = 0, 1
+	}
+
+	b.mu.Lock()
+	b.rowFreeze, b.colFreeze = rows, cols
+	b.mu.Unlock()
+}
+
+// loadAndShow loads everything, reporting progress to the console, then draws.
+func loadAndShow(intake Intake, buf *Buffer, piped bool) {
+	console := newProgressTracker(intake.Source.Size, true)
+	intake.OnProgress = func(rows int, loaded, total int64) {
+		loadProgress.Set(rows, loaded, total)
+		console.update(rows, loaded)
+	}
+
+	err := intake.Into(buf)
+	loadProgress.Finish()
+	console.finish()
+	fatalError(err)
+
+	if exitIfEmpty(buf, piped) {
+		return
+	}
+	fatalError(drawUI())
+	runApp()
+}
+
+// loadProgressively draws as soon as the first rows land and refreshes while
+// the rest arrive.
+func loadProgressively(intake Intake, buf *Buffer, piped bool) {
+	userMovedCursor = false
+
+	ready := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	var first sync.Once
+
+	intake.OnProgress = func(rows int, loaded, total int64) {
+		loadProgress.Set(rows, loaded, total)
+		first.Do(func() { ready <- struct{}{} })
+	}
+
+	go func() { done <- intake.Into(buf) }()
+
+	// Wait for something to draw, or for a load that failed or finished first.
+	select {
+	case <-ready:
+	case err := <-done:
+		loadProgress.Finish()
+		fatalError(err)
+		if exitIfEmpty(buf, piped) {
+			return
+		}
+		fatalError(drawUI())
+		runApp()
+		return
+	}
+
+	if exitIfEmpty(buf, piped) {
+		return
+	}
+	fatalError(drawUI())
+
+	go refreshWhileLoading(done)
+	runApp()
+}
+
+// refreshWhileLoading repaints the table until the load finishes.
+func refreshWhileLoading(done <-chan error) {
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case err := <-done:
+			loadProgress.Finish()
+			if err != nil {
+				fatalError(err)
+				return
+			}
+			rows, _, _, _ := loadProgress.Snapshot()
+			app.QueueUpdateDraw(func() {
+				drawBuffer(view.Visible(), bufferTable)
+				// Column types are detected as the load finishes, so refresh
+				// the readout rather than leaving the pre-load one on screen.
+				row, col := bufferTable.GetSelection()
+				cursorPosStr = buildCursorPosStr(row, col)
+				updateFooterWithStatus("Loaded " + strconv.Itoa(rows) + " rows")
+			})
+			return
+
+		case <-ticker.C:
+			app.QueueUpdateDraw(func() {
+				drawBuffer(view.Visible(), bufferTable)
+
+				// Keep the cursor on the first row until the user moves it.
+				if !userMovedCursor {
+					row, col := bufferTable.GetSelection()
+					if row != 0 {
+						bufferTable.Select(0, col)
+					}
+				}
+
+				rows, _, total, _ := loadProgress.Snapshot()
+				if total > 0 {
+					updateFooterWithStatus(fmt.Sprintf("Loading... %.1f%%", loadProgress.GetPercentage()))
+				} else {
+					updateFooterWithStatus("Loading... " + strconv.Itoa(rows) + " rows")
+				}
+			})
+		}
+	}
+}
+
+// exitIfEmpty reports whether there is nothing to show, having said so.
+func exitIfEmpty(b *Buffer, piped bool) bool {
+	b.mu.RLock()
+	rowLen, rowFreeze := b.rowLen, b.rowFreeze
+	b.mu.RUnlock()
+
+	if rowLen > 0 && rowLen-rowFreeze > 0 {
+		return false
+	}
+
+	stopView()
+	switch {
+	case piped && rowLen == 0:
+		fmt.Println("⚠️  No data received from pipe (empty input)")
+	case piped:
+		fmt.Println("⚠️  No data received from pipe (only header, no data rows)")
+	case rowLen == 0:
+		fmt.Println("⚠️  File is empty (no rows)")
+	default:
+		fmt.Println("⚠️  File is empty (only header, no data rows)")
+	}
+	os.Exit(0)
+	return true
+}
+
+// runApp starts the event loop unless the process is under test.
+func runApp() {
+	if debug {
+		return
+	}
+	if err := app.SetRoot(UI, true).SetFocus(UI).Run(); err != nil {
+		fatalError(err)
+	}
 }

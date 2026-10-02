@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -144,36 +145,50 @@ func TestTruncateText_ZeroWidth(t *testing.T) {
 // Column Width Tests
 // ========================================
 
-func TestGetColumnMaxWidth_Valid(t *testing.T) {
-	// Initialize wrapped columns map
-	wrappedColumns = make(map[int]int)
+func TestViewState_ColumnWidth_Unlimited(t *testing.T) {
+	v := NewViewState(createNewBuffer())
 
-	// Create a test buffer
-	b = createNewBuffer()
-	_ = b.contAppendSli([]string{"Short", "Medium", "VeryLongText"}, false)
-
-	width := getColumnMaxWidth(0)
-	if width < 1 {
-		t.Error("getColumnMaxWidth should return positive width")
+	if width, limited := v.ColumnWidth(0); limited {
+		t.Errorf("a fresh column should carry no width limit, got %d", width)
 	}
 }
 
-func TestGetColumnMaxWidth_Custom(t *testing.T) {
-	wrappedColumns = make(map[int]int)
-	wrappedColumns[0] = 30
+func TestViewState_ToggleWrap(t *testing.T) {
+	v := NewViewState(createNewBuffer())
 
-	width := getColumnMaxWidth(0)
-	if width != 30 {
-		t.Errorf("getColumnMaxWidth(0) = %d, want 30", width)
+	width, limited := v.ToggleWrap(0)
+	if !limited {
+		t.Fatal("ToggleWrap should limit an unlimited column")
+	}
+	if width != defaultWrapWidth {
+		t.Errorf("ToggleWrap width = %d, want %d", width, defaultWrapWidth)
+	}
+	if got, ok := v.ColumnWidth(0); !ok || got != defaultWrapWidth {
+		t.Errorf("ColumnWidth(0) = %d, %v; want %d, true", got, ok, defaultWrapWidth)
+	}
+
+	if _, limited := v.ToggleWrap(0); limited {
+		t.Error("ToggleWrap should remove the limit on a limited column")
+	}
+	if _, ok := v.ColumnWidth(0); ok {
+		t.Error("ColumnWidth should report no limit after the second toggle")
 	}
 }
 
-func TestGetColumnMaxWidth_Default(t *testing.T) {
-	wrappedColumns = make(map[int]int)
+func TestViewState_DetectWideColumns(t *testing.T) {
+	b := createNewBuffer()
+	b.rowFreeze = 1
+	_ = b.contAppendSli([]string{"head1", "head2"}, false)
+	_ = b.contAppendSli([]string{"short", strings.Repeat("x", 80)}, false)
 
-	width := getColumnMaxWidth(5)
-	if width != 50 {
-		t.Errorf("getColumnMaxWidth(5) = %d, want default 50", width)
+	v := NewViewState(b)
+	v.DetectWideColumns(100, 50)
+
+	if _, ok := v.ColumnWidth(0); ok {
+		t.Error("a narrow column should not be limited")
+	}
+	if width, ok := v.ColumnWidth(1); !ok || width != defaultWrapWidth {
+		t.Errorf("a wide column should be limited to %d, got %d (%v)", defaultWrapWidth, width, ok)
 	}
 }
 
@@ -216,11 +231,12 @@ func TestUsefulInfo_NotEmpty(t *testing.T) {
 func TestType2Name(t *testing.T) {
 	tests := []struct {
 		name     string
-		colType  int
+		colType  ColumnType
 		expected string
 	}{
 		{"String type", colTypeStr, "Str"},
 		{"Float type", colTypeFloat, "Num"},
+		{"Date type", colTypeDate, "Date"},
 	}
 
 	for _, tt := range tests {

@@ -2,30 +2,38 @@ package main
 
 import (
 	"errors"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
-// Buffer represents a table data structure with concurrent access support
+// Buffer holds the table and owns every rule for reading or changing it
+// safely. Callers do not need to know which operations are concurrent with a
+// load: every exported operation takes the lock it needs, so the loader's
+// workers and the UI goroutine can both hold a *Buffer.
 type Buffer struct {
 	sep          rune         // Column separator character
 	cont         [][]string   // Table content (rows x columns)
-	colType      []int        // Column data types (colTypeStr or colTypeFloat)
+	colType      []ColumnType // Column data types
 	rowLen       int          // Number of rows
 	colLen       int          // Number of columns
 	rowFreeze    int          // Number of frozen header rows (0 or 1)
 	colFreeze    int          // Number of frozen columns (0 or 1)
 	selectedCell [][]int      // Selected cell coordinates
-	mu           sync.RWMutex // Mutex for concurrent access
+	mu           sync.RWMutex // Guards every field above
 }
 
 const (
 	// Pre-allocated capacity for rows (optimized for large files)
 	defaultRowCapacity = 10000
+
+	// detectSampleSize is how many cells autoDetectColumnType inspects before
+	// deciding a column's type.
+	detectSampleSize = 100
+
+	// detectThreshold is the share of non-missing values that must satisfy a
+	// type for the column to be given that type.
+	detectThreshold = 0.90
 )
 
 // createNewBuffer initializes and returns a new empty Buffer
@@ -33,7 +41,7 @@ func createNewBuffer() *Buffer {
 	return &Buffer{
 		sep:          0,
 		cont:         [][]string{},
-		colType:      []int{},
+		colType:      []ColumnType{},
 		rowLen:       0,
 		colLen:       0,
 		rowFreeze:    1,
@@ -42,15 +50,15 @@ func createNewBuffer() *Buffer {
 	}
 }
 
-// createNewBufferWithData creates a Buffer from existing data
+// createNewBufferWithData creates a Buffer from existing data.
 func createNewBufferWithData(ss [][]string, strict bool) (*Buffer, error) {
-	b = createNewBuffer()
+	buf := createNewBuffer()
 	for _, s := range ss {
-		if err := b.contAppendSli(s, strict); err != nil {
+		if err := buf.contAppendSli(s, strict); err != nil {
 			return nil, err
 		}
 	}
-	return b, nil
+	return buf, nil
 }
 
 // contAppendSli appends a row to the buffer
@@ -62,7 +70,7 @@ func (b *Buffer) contAppendSli(s []string, strict bool) error {
 	// Initialize on first row
 	if b.rowLen == 0 {
 		b.colLen = len(s)
-		b.colType = make([]int, b.colLen+1)
+		b.colType = make([]ColumnType, b.colLen+1)
 		// Pre-allocate capacity to reduce reallocations
 		if cap(b.cont) == 0 {
 			b.cont = make([][]string, 0, defaultRowCapacity)
@@ -104,6 +112,12 @@ func (b *Buffer) resizeColUnsafe(n int) {
 			b.cont[ii] = append(b.cont[ii], "NaN")
 		}
 	}
+
+	// Keep the type slice as wide as the table, so a later, wider row can
+	// never put a column index out of range.
+	for len(b.colType) < b.colLen+1 {
+		b.colType = append(b.colType, colTypeStr)
+	}
 }
 
 // resizeCol adjusts the number of columns (thread-safe)
@@ -113,194 +127,110 @@ func (b *Buffer) resizeCol(n int) {
 	b.resizeColUnsafe(n)
 }
 
-// sortByStr sorts the buffer by column in string mode
-// colIndex: column to sort by
-// rev: true for descending, false for ascending
-func (b *Buffer) sortByStr(colIndex int, rev bool) {
-	hasHeader := I2B(b.rowFreeze)
+// SortBy orders the buffer's data rows by one column, using that column's own
+// type to decide what order means. Callers pick a column and a direction; the
+// buffer picks the comparison, so nothing outside has to switch on type.
+func (b *Buffer) SortBy(colIndex int, desc bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
-	if rev {
-		// Descending sort
-		if hasHeader {
-			sort.SliceStable(b.cont[1:], func(i, j int) bool {
-				return b.cont[1:][i][colIndex] > b.cont[1:][j][colIndex]
-			})
-		} else {
-			sort.SliceStable(b.cont, func(i, j int) bool {
-				return b.cont[i][colIndex] > b.cont[j][colIndex]
-			})
-		}
-	} else {
-		// Ascending sort
-		if hasHeader {
-			sort.SliceStable(b.cont[1:], func(i, j int) bool {
-				return b.cont[1:][i][colIndex] < b.cont[1:][j][colIndex]
-			})
-		} else {
-			sort.SliceStable(b.cont, func(i, j int) bool {
-				return b.cont[i][colIndex] < b.cont[j][colIndex]
-			})
-		}
-	}
-}
-
-// sortByNum sorts column by number format with optimized numeric conversion
-func (b *Buffer) sortByNum(colIndex int, rev bool) {
-	hasHeader := I2B(b.rowFreeze)
-	dataRows := b.cont
-	if hasHeader {
-		dataRows = b.cont[1:]
+	if colIndex < 0 || colIndex >= b.colLen {
+		return
 	}
 
-	// Create index-value pairs to sort
-	type numRow struct {
+	rows := b.cont
+	if b.rowFreeze > 0 && len(rows) >= b.rowFreeze {
+		rows = rows[b.rowFreeze:]
+	}
+	if len(rows) < 2 {
+		return
+	}
+
+	cellAt := func(row []string) string {
+		if colIndex < len(row) {
+			return row[colIndex]
+		}
+		return ""
+	}
+
+	colType := colTypeStr
+	if colIndex < len(b.colType) {
+		colType = b.colType[colIndex]
+	}
+	parse := columnTypes[colType].parse
+
+	// A type with no parser orders lexically on the raw cell.
+	if parse == nil {
+		sort.SliceStable(rows, func(i, j int) bool {
+			if desc {
+				return cellAt(rows[i]) > cellAt(rows[j])
+			}
+			return cellAt(rows[i]) < cellAt(rows[j])
+		})
+		return
+	}
+
+	// Parse each cell once rather than on every comparison.
+	type keyedRow struct {
 		row []string
-		num float64
+		key float64
+	}
+	pairs := make([]keyedRow, len(rows))
+	for i, row := range rows {
+		key, _ := parse(cellAt(row))
+		pairs[i] = keyedRow{row: row, key: key}
 	}
 
-	pairs := make([]numRow, len(dataRows))
-	for i := range dataRows {
-		pairs[i] = numRow{
-			row: dataRows[i],
-			num: parseNumericValueFast(dataRows[i][colIndex]),
+	sort.SliceStable(pairs, func(i, j int) bool {
+		if desc {
+			return pairs[i].key > pairs[j].key
 		}
-	}
+		return pairs[i].key < pairs[j].key
+	})
 
-	// Sort the pairs
-	if rev {
-		sort.SliceStable(pairs, func(i, j int) bool {
-			return pairs[i].num > pairs[j].num
-		})
-	} else {
-		sort.SliceStable(pairs, func(i, j int) bool {
-			return pairs[i].num < pairs[j].num
-		})
-	}
-
-	// Copy back sorted rows
 	for i := range pairs {
-		dataRows[i] = pairs[i].row
+		rows[i] = pairs[i].row
 	}
-}
-
-// sortByDate sorts column by date format with optimized date parsing
-func (b *Buffer) sortByDate(colIndex int, rev bool) {
-	hasHeader := I2B(b.rowFreeze)
-	dataRows := b.cont
-	if hasHeader {
-		dataRows = b.cont[1:]
-	}
-
-	// Create index-value pairs to sort
-	type dateRow struct {
-		row  []string
-		date int64
-	}
-
-	pairs := make([]dateRow, len(dataRows))
-	for i := range dataRows {
-		pairs[i] = dateRow{
-			row:  dataRows[i],
-			date: parseDateValueFast(dataRows[i][colIndex]),
-		}
-	}
-
-	// Sort the pairs
-	if rev {
-		sort.SliceStable(pairs, func(i, j int) bool {
-			return pairs[i].date > pairs[j].date
-		})
-	} else {
-		sort.SliceStable(pairs, func(i, j int) bool {
-			return pairs[i].date < pairs[j].date
-		})
-	}
-
-	// Copy back sorted rows
-	for i := range pairs {
-		dataRows[i] = pairs[i].row
-	}
-}
-
-// parseNumericValueFast quickly parses a string to float64
-// Handles commas, underscores, and returns 0 for invalid values
-func parseNumericValueFast(s string) float64 {
-	// Remove common separators
-	s = strings.ReplaceAll(s, ",", "")
-	s = strings.ReplaceAll(s, "_", "")
-	s = strings.TrimSpace(s)
-
-	if s == "" || s == "NA" || s == "N/A" || s == "NaN" || s == "null" {
-		return 0
-	}
-
-	val, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0
-	}
-	return val
-}
-
-// parseDateValueFast quickly parses a date string to unix timestamp
-// Returns 0 for invalid dates
-func parseDateValueFast(s string) int64 {
-	s = strings.TrimSpace(s)
-
-	if s == "" || s == "NA" || s == "N/A" || s == "null" {
-		return 0
-	}
-
-	// Try common date formats (most common first for performance)
-	formats := []string{
-		"2006-01-02",          // ISO date: 2024-10-17
-		"2006-01-02 15:04:05", // ISO datetime: 2024-10-17 15:30:00
-		"01/02/2006",          // US date: 10/17/2024
-		"02/01/2006",          // EU date: 17/10/2024
-		"2006/01/02",          // Alt ISO: 2024/10/17
-		time.RFC3339,          // RFC3339: 2024-10-17T15:30:00Z
-		"2006-01-02T15:04:05", // ISO8601 without timezone
-		"Jan 02, 2006",        // Mon DD, YYYY
-		"January 02, 2006",    // Month DD, YYYY
-		"02-Jan-2006",         // DD-Mon-YYYY
-		"02 Jan 2006",         // DD Mon YYYY
-		"2006.01.02",          // Dotted date
-	}
-
-	for _, format := range formats {
-		if t, err := time.Parse(format, s); err == nil {
-			return t.Unix()
-		}
-	}
-
-	return 0
 }
 
 // getCol returns the ith column data as a string slice
-// Uses pointer receiver to avoid copying mutex
 func (b *Buffer) getCol(i int) []string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
 	result := make([]string, b.rowLen)
 	for rowI := 0; rowI < b.rowLen; rowI++ {
-		result[rowI] = b.cont[rowI][i]
+		if i < len(b.cont[rowI]) {
+			result[rowI] = b.cont[rowI][i]
+		}
 	}
 	return result
 }
 
-// set ith column data type
-func (b *Buffer) setColType(i int, t int) {
+// setColType sets the ith column's data type.
+func (b *Buffer) setColType(i int, t ColumnType) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if i < 0 || i >= len(b.colType) {
+		return
+	}
 	b.colType[i] = t
 }
 
-// get ith column data type
-func (b *Buffer) getColType(i int) int {
+// getColType returns the ith column's data type.
+func (b *Buffer) getColType(i int) ColumnType {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if i < 0 || i >= len(b.colType) {
+		return colTypeStr
+	}
 	return b.colType[i]
 }
 
-// autoDetectColumnType intelligently detects if a column contains numeric, date, or string data
-// Returns colTypeDate for dates, colTypeFloat for numbers, colTypeStr for strings
-func (b *Buffer) autoDetectColumnType(colIndex int) int {
+// autoDetectColumnType decides a column's type by sampling its values. It asks
+// each candidate type's own parser, so detection can never disagree with the
+// ordering that parser produces.
+func (b *Buffer) autoDetectColumnType(colIndex int) ColumnType {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
@@ -308,15 +238,11 @@ func (b *Buffer) autoDetectColumnType(colIndex int) int {
 		return colTypeStr
 	}
 
-	// Sample size for type detection
 	startRow := b.rowFreeze
 	endRow := b.rowLen
-
-	// For large datasets, sample smartly (first N rows + some middle + last N)
-	sampleSize := 100
 	sampleRows := []int{}
 
-	if endRow-startRow > sampleSize {
+	if endRow-startRow > detectSampleSize {
 		// Sample first 50 rows
 		for i := startRow; i < startRow+50 && i < endRow; i++ {
 			sampleRows = append(sampleRows, i)
@@ -339,9 +265,7 @@ func (b *Buffer) autoDetectColumnType(colIndex int) int {
 		}
 	}
 
-	// Analyze samples
-	dateCount := 0
-	numericCount := 0
+	counts := make(map[ColumnType]int, len(detectionOrder))
 	totalCount := 0
 
 	for _, rowIdx := range sampleRows {
@@ -350,148 +274,51 @@ func (b *Buffer) autoDetectColumnType(colIndex int) int {
 		}
 
 		value := strings.TrimSpace(b.cont[rowIdx][colIndex])
-
-		// Skip empty/null cells
-		if value == "" || value == "NA" || value == "N/A" || value == "NaN" || value == "null" {
+		if isMissing(value) {
 			continue
 		}
-
 		totalCount++
 
-		// Check if it's a date (dates are more specific than numbers)
-		if isDateValue(value) {
-			dateCount++
-		} else if isNumericValue(value) {
-			numericCount++
+		// detectionOrder is most specific first, so the first type that
+		// accepts the value is the one it counts for.
+		for _, candidate := range detectionOrder {
+			if _, ok := columnTypes[candidate].parse(value); ok {
+				counts[candidate]++
+				break
+			}
 		}
 	}
 
-	// If no valid values, treat as string
 	if totalCount == 0 {
 		return colTypeStr
 	}
 
-	// Threshold: 90% of values must match type
-	threshold := float64(totalCount) * 0.90
-
-	// Priority: Date > Number > String
-	if float64(dateCount) >= threshold {
-		return colTypeDate
-	} else if float64(numericCount) >= threshold {
-		return colTypeFloat
+	threshold := float64(totalCount) * detectThreshold
+	for _, candidate := range detectionOrder {
+		if float64(counts[candidate]) >= threshold {
+			return candidate
+		}
 	}
 
 	return colTypeStr
 }
 
-// isDateValue checks if a string represents a valid date
-func isDateValue(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-
-	// Quick heuristic checks before trying to parse
-	// Dates typically contain: -, /, :, T, or spaces with commas (for month names)
-	hasDateSep := strings.ContainsAny(s, "-/.:T") || (strings.Contains(s, " ") && strings.Contains(s, ","))
-	if !hasDateSep {
-		return false
-	}
-
-	// Common date formats (most common first for performance)
-	formats := []string{
-		"2006-01-02",          // ISO date: 2024-10-17
-		"2006-01-02 15:04:05", // ISO datetime: 2024-10-17 15:30:00
-		"01/02/2006",          // US date: 10/17/2024
-		"02/01/2006",          // EU date: 17/10/2024
-		"2006/01/02",          // Alt ISO: 2024/10/17
-		time.RFC3339,          // RFC3339: 2024-10-17T15:30:00Z
-		"2006-01-02T15:04:05", // ISO8601 without timezone
-		"Jan 02, 2006",        // Mon DD, YYYY
-		"January 02, 2006",    // Month DD, YYYY
-		"02-Jan-2006",         // DD-Mon-YYYY
-		"02 Jan 2006",         // DD Mon YYYY
-		"2006.01.02",          // Dotted date
-	}
-
-	for _, format := range formats {
-		if _, err := time.Parse(format, s); err == nil {
-			return true
-		}
-	}
-
-	return false
-}
-
-// isNumericValue checks if a string represents a valid number
-// Handles: integers, floats, scientific notation, negative numbers
-func isNumericValue(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-
-	// Quick check for common patterns
-	hasDigit := false
-	hasDot := false
-	hasE := false
-	i := 0
-
-	// Handle sign
-	if s[i] == '+' || s[i] == '-' {
-		i++
-		if i >= len(s) {
-			return false
-		}
-	}
-
-	// Parse number
-	for i < len(s) {
-		c := s[i]
-
-		if c >= '0' && c <= '9' {
-			hasDigit = true
-		} else if c == '.' {
-			if hasDot || hasE {
-				return false // Multiple dots or dot after E
-			}
-			hasDot = true
-		} else if c == 'e' || c == 'E' {
-			if !hasDigit || hasE {
-				return false // E without digits or multiple E
-			}
-			hasE = true
-			hasDigit = false // Reset for exponent part
-
-			// Check for sign after E
-			if i+1 < len(s) && (s[i+1] == '+' || s[i+1] == '-') {
-				i++
-			}
-		} else if c == '_' || c == ',' {
-			// Allow thousand separators (common in data files)
-			// Skip validation, just continue
-		} else {
-			return false // Invalid character
-		}
-		i++
-	}
-
-	return hasDigit
-}
-
-// detectAllColumnTypes automatically detects types for all columns
+// detectAllColumnTypes automatically detects types for all columns.
 func (b *Buffer) detectAllColumnTypes() {
-	for i := 0; i < b.colLen; i++ {
-		detectedType := b.autoDetectColumnType(i)
-		b.setColType(i, detectedType)
+	b.mu.RLock()
+	colLen := b.colLen
+	b.mu.RUnlock()
+
+	for i := 0; i < colLen; i++ {
+		b.setColType(i, b.autoDetectColumnType(i))
 	}
 }
 
-//clear selectedCell of buffer
-//func (b *Buffer) clearSelection() {
-//	b.selectedCell = [][]int{}
-//}
-
-// search string and add result to selectedCell of buffer
+// selectBySearch records every cell holding exactly s.
 func (b *Buffer) selectBySearch(s string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	for ii, i := range b.cont {
 		for ji, j := range i {
 			if s == j {
@@ -501,15 +328,8 @@ func (b *Buffer) selectBySearch(s string) {
 	}
 }
 
-// FilterOptions defines the parameters for a column filter.
-type FilterOptions struct {
-	Query         string
-	Operator      string
-	CaseSensitive bool
-}
-
-// filterByColumn filters rows based on column value using the provided options.
-// It returns a new buffer containing the filtered rows.
+// filterByColumn returns a new buffer holding the rows whose value in one
+// column satisfies options. The matcher is compiled once for the whole scan.
 func (b *Buffer) filterByColumn(colIndex int, options FilterOptions) *Buffer {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -519,7 +339,7 @@ func (b *Buffer) filterByColumn(colIndex int, options FilterOptions) *Buffer {
 	filtered.colLen = b.colLen
 	filtered.rowFreeze = b.rowFreeze
 	filtered.colFreeze = b.colFreeze
-	filtered.colType = make([]int, len(b.colType))
+	filtered.colType = make([]ColumnType, len(b.colType))
 	copy(filtered.colType, b.colType)
 
 	// Add header row if present
@@ -528,91 +348,26 @@ func (b *Buffer) filterByColumn(colIndex int, options FilterOptions) *Buffer {
 		filtered.rowLen = 1
 	}
 
-	// Get column type for numeric comparisons
 	colType := colTypeStr
-	if colIndex < len(b.colType) {
+	if colIndex >= 0 && colIndex < len(b.colType) {
 		colType = b.colType[colIndex]
 	}
 
-	// Filter data rows
-	startRow := b.rowFreeze
-	for i := startRow; i < b.rowLen; i++ {
-		if colIndex >= len(b.cont[i]) {
+	matcher, err := CompileMatcher(options, colType)
+	if err != nil {
+		// An unusable pattern matches nothing, leaving just the header.
+		return filtered
+	}
+
+	for i := b.rowFreeze; i < b.rowLen; i++ {
+		if colIndex < 0 || colIndex >= len(b.cont[i]) {
 			continue
 		}
-
-		cellValue := b.cont[i][colIndex]
-
-		// Evaluate filter condition
-		if evaluateFilter(cellValue, options, colType) {
+		if matcher.MatchCell(b.cont[i][colIndex]) {
 			filtered.cont = append(filtered.cont, b.cont[i])
 			filtered.rowLen++
 		}
 	}
 
 	return filtered
-}
-
-// evaluateFilter checks if a cell value matches the filter query based on the operator.
-func evaluateFilter(cellValue string, options FilterOptions, colType int) bool {
-	query := options.Query
-	operator := options.Operator
-
-	// Handle numeric comparisons first
-	if colType == colTypeFloat || colType == colTypeDate {
-		isNumericOperator := false
-		switch operator {
-		case ">", "<", ">=", "<=":
-			isNumericOperator = true
-		}
-
-		if isNumericOperator {
-			cellVal := parseNumericValueFast(cellValue)
-			thresholdVal, err := strconv.ParseFloat(strings.TrimSpace(query), 64)
-			if err != nil {
-				return false // Cannot compare if query is not a number
-			}
-
-			switch operator {
-			case ">":
-				return cellVal > thresholdVal
-			case "<":
-				return cellVal < thresholdVal
-			case ">=":
-				return cellVal >= thresholdVal
-			case "<=":
-				return cellVal <= thresholdVal
-			}
-		}
-	}
-
-	// Prepare strings for comparison
-	cell := cellValue
-	q := query
-	if !options.CaseSensitive {
-		cell = strings.ToLower(cell)
-		q = strings.ToLower(q)
-	}
-
-	// Handle string-based operators
-	switch operator {
-	case "contains":
-		return strings.Contains(cell, q)
-	case "equals":
-		return cell == q
-	case "starts with":
-		return strings.HasPrefix(cell, q)
-	case "ends with":
-		return strings.HasSuffix(cell, q)
-	case "regex":
-		// When using regex, the user has full control over case sensitivity in the pattern.
-		re, err := regexp.Compile(options.Query)
-		if err != nil {
-			return false // Invalid regex
-		}
-		return re.MatchString(cellValue)
-	default:
-		// Default to contains for backward compatibility if operator is empty
-		return strings.Contains(cell, q)
-	}
 }

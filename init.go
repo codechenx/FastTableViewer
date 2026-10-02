@@ -1,99 +1,73 @@
 package main
 
 import (
+	"time"
+
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
 
-// column data type
-const colTypeStr = 0
-const colTypeFloat = 1
-const colTypeDate = 2
+// Application-level state. What the viewer *shows* lives behind view; what
+// remains here is the terminal UI itself, the strings currently painted in the
+// footer, and the input mode needed to recognise a two-key sequence.
+var (
+	app         *tview.Application
+	UI          *tview.Pages
+	mainPage    *tview.Frame
+	bufferTable *tview.Table
 
-// get column data type name. s: string, n: number, d: date
-func type2name(i int) string {
-	switch i {
-	case colTypeStr:
-		return "Str"
-	case colTypeFloat:
-		return "Num"
-	case colTypeDate:
-		return "Date"
-	default:
-		return "Str"
-	}
-}
+	view  *ViewState // the data on screen, and every rule for changing it
+	args  Args
+	debug bool
 
-var app *tview.Application
-var UI *tview.Pages
-var b *Buffer
-var args Args
-var debug bool
-var statusMessage string         // Track status message for footer updates
-var mainPage *tview.Frame        // Reference to main page for footer updates
-var bufferTable *tview.Table     // Reference to buffer table
-var fileNameStr string           // Store filename for footer
-var cursorPosStr string          // Store cursor position for footer
-var loadProgress LoadProgress    // Track loading progress
-var userMovedCursor bool         // Track if user has moved the cursor
-var wrappedColumns map[int]int   // Track which columns are wrapped and their max width
-var searchResults []SearchResult // Store search results
-var currentSearchIndex int       // Current position in search results
-var searchQuery string           // Current search query
-var searchModal tview.Primitive  // Search modal dialog
-var searchUseRegex bool
+	loadProgress LoadProgress
 
-var originalBuffer *Buffer              // Store original buffer before filtering
-var isFiltered bool                     // Track if filter is active
-var activeFilters map[int]FilterOptions // Track active filters: column -> query
-var currentCursorColumn int             // Track current cursor column position
-var lastKeyWasG bool                    // Track if last key pressed was 'g' for gg navigation
+	statusMessage string // footer centre
+	fileNameStr   string // footer left
+	cursorPosStr  string // footer right
 
-// LoadProgress tracks loading progress
-type LoadProgress struct {
-	TotalBytes  int64
-	LoadedBytes int64
-	IsComplete  bool
-}
+	userMovedCursor bool      // whether to keep the cursor pinned while loading
+	lastGPress      time.Time // for recognising "gg"
+)
 
-// GetPercentage returns the loading percentage (0-100)
-func (lp *LoadProgress) GetPercentage() float64 {
-	if lp.TotalBytes <= 0 {
-		return 0
-	}
-	percent := float64(lp.LoadedBytes) * 100.0 / float64(lp.TotalBytes)
-	if percent > 100 {
-		percent = 100
-	}
-	return percent
-}
+// gRepeatWindow is how long the second 'g' of a "gg" may arrive.
+const gRepeatWindow = 500 * time.Millisecond
 
-// SearchResult represents a cell that matches search query
+// SearchResult represents a cell that matches a search query.
 type SearchResult struct {
 	Row int
 	Col int
 }
 
-// initialize tview, buffer
+// initialize tview and the view
 func initView() {
 	app = tview.NewApplication()
 	app.EnableMouse(true) // Enable mouse support
-	b = createNewBuffer()
-	wrappedColumns = make(map[int]int) // Initialize wrapped columns map
-	searchResults = []SearchResult{}
-	currentSearchIndex = -1
-	searchQuery = ""
-	searchUseRegex = false
-	originalBuffer = nil // Initialize filter variables
-	isFiltered = false
-	activeFilters = make(map[int]FilterOptions) // Initialize active filters map
-	currentCursorColumn = 0                     // Initialize cursor column
-	lastKeyWasG = false                         // Initialize vim navigation state
+	view = NewViewState(createNewBuffer())
+	userMovedCursor = false
+	lastGPress = time.Time{}
+	statusMessage = ""
+	fileNameStr = ""
+	cursorPosStr = ""
 }
 
 // stop UI
 func stopView() {
-	app.Stop()
+	if app != nil {
+		app.Stop()
+	}
+}
+
+// pressedGTwice reports whether this 'g' completes a "gg" within the repeat
+// window. Using a timestamp keeps the check on the event loop; the flag it
+// replaced was cleared from a timer goroutine, racing with the key handler.
+func pressedGTwice() bool {
+	if !lastGPress.IsZero() && time.Since(lastGPress) < gRepeatWindow {
+		lastGPress = time.Time{}
+		return true
+	}
+	lastGPress = time.Now()
+	return false
 }
 
 // updateFooterWithStatus updates the footer with a status message
@@ -107,5 +81,3 @@ func updateFooterWithStatus(status string) {
 			AddText(cursorPosStr, false, tview.AlignRight, tcell.ColorDarkOrange)
 	}
 }
-
-//help page content

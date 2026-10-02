@@ -2,16 +2,33 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
+
+// loadFileInto loads a file through Intake, the way the viewer does.
+func loadFileInto(fn string, b *Buffer) error {
+	src, err := openFileSource(fn)
+	if err != nil {
+		return err
+	}
+	return Intake{Source: src}.Into(b)
+}
+
+// loadReaderInto loads a stream through Intake, the way a pipe does. It is the
+// third adapter for the Source seam, alongside the file and standard input.
+func loadReaderInto(r io.Reader, b *Buffer) error {
+	return Intake{Source: pipeSource(r)}.Into(b)
+}
 
 // ========================================
 // File Loading Tests
 // ========================================
 
-func Test_loadFileToBuffer(t *testing.T) {
+func Test_loadFileInto(t *testing.T) {
 	type args struct {
 		fn string
 		b  *Buffer
@@ -27,8 +44,8 @@ func Test_loadFileToBuffer(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := loadFileToBuffer(tt.args.fn, tt.args.b); (err != nil) != tt.wantErr {
-				t.Errorf("loadFileToBuffer() error = %v, wantErr %v", err, tt.wantErr)
+			if err := loadFileInto(tt.args.fn, tt.args.b); (err != nil) != tt.wantErr {
+				t.Errorf("loadFileInto() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
@@ -36,7 +53,7 @@ func Test_loadFileToBuffer(t *testing.T) {
 
 func TestLoadFileToBuffer_LargeFile(t *testing.T) {
 	b := createNewBuffer()
-	err := loadFileToBuffer("./data/test/large_sample.csv", b)
+	err := loadFileInto("./data/test/large_sample.csv", b)
 	if err != nil {
 		t.Skipf("Test file not found: %v", err)
 		return
@@ -53,7 +70,7 @@ func TestLoadFileToBuffer_LargeFile(t *testing.T) {
 
 func TestLoadFileToBuffer_NumericData(t *testing.T) {
 	b := createNewBuffer()
-	err := loadFileToBuffer("./data/test/numeric_data.csv", b)
+	err := loadFileInto("./data/test/numeric_data.csv", b)
 	if err != nil {
 		t.Skipf("Test file not found: %v", err)
 		return
@@ -68,7 +85,7 @@ func TestLoadFileToBuffer_NumericData(t *testing.T) {
 
 func TestLoadFileToBuffer_SpecialChars(t *testing.T) {
 	b := createNewBuffer()
-	err := loadFileToBuffer("./data/test/special_characters.csv", b)
+	err := loadFileInto("./data/test/special_characters.csv", b)
 	if err != nil {
 		t.Skipf("Test file not found: %v", err)
 		return
@@ -81,7 +98,7 @@ func TestLoadFileToBuffer_SpecialChars(t *testing.T) {
 
 func TestLoadFileToBuffer_Compressed(t *testing.T) {
 	b := createNewBuffer()
-	err := loadFileToBuffer("./data/test/compressed_data.csv.gz", b)
+	err := loadFileInto("./data/test/compressed_data.csv.gz", b)
 	if err != nil {
 		t.Skipf("Compressed test file not found: %v", err)
 		return
@@ -94,7 +111,7 @@ func TestLoadFileToBuffer_Compressed(t *testing.T) {
 
 func TestLoadFileToBuffer_TSV(t *testing.T) {
 	b := createNewBuffer()
-	err := loadFileToBuffer("./data/test/tab_separated.tsv", b)
+	err := loadFileInto("./data/test/tab_separated.tsv", b)
 	if err != nil {
 		t.Skipf("TSV test file not found: %v", err)
 		return
@@ -108,7 +125,7 @@ func TestLoadFileToBuffer_TSV(t *testing.T) {
 func TestLoadFileToBuffer_EdgeCases(t *testing.T) {
 	t.Run("Empty file", func(t *testing.T) {
 		b := createNewBuffer()
-		err := loadFileToBuffer("./data/test/empty_file.csv", b)
+		err := loadFileInto("./data/test/empty_file.csv", b)
 		if err != nil {
 			t.Skipf("Empty test file not found: %v", err)
 			return
@@ -121,7 +138,7 @@ func TestLoadFileToBuffer_EdgeCases(t *testing.T) {
 
 	t.Run("Single row", func(t *testing.T) {
 		b := createNewBuffer()
-		err := loadFileToBuffer("./data/test/single_row_data.csv", b)
+		err := loadFileInto("./data/test/single_row_data.csv", b)
 		if err != nil {
 			t.Skipf("Single row test file not found: %v", err)
 			return
@@ -134,7 +151,7 @@ func TestLoadFileToBuffer_EdgeCases(t *testing.T) {
 
 	t.Run("Non-existent file", func(t *testing.T) {
 		b := createNewBuffer()
-		err := loadFileToBuffer("./nonexistent_file_xyz.csv", b)
+		err := loadFileInto("./nonexistent_file_xyz.csv", b)
 		if err == nil {
 			t.Error("Expected error for non-existent file")
 		}
@@ -150,9 +167,9 @@ func TestLoadPipeToBuffer(t *testing.T) {
 	reader := strings.NewReader(csvData)
 
 	b := createNewBuffer()
-	err := loadPipeToBuffer(reader, b)
+	err := loadReaderInto(reader, b)
 	if err != nil {
-		t.Fatalf("loadPipeToBuffer() error = %v", err)
+		t.Fatalf("loadReaderInto() error = %v", err)
 	}
 
 	if b.rowLen != 4 {
@@ -165,7 +182,14 @@ func TestLoadPipeToBuffer(t *testing.T) {
 }
 
 func TestLoadPipeToBuffer_Empty(t *testing.T) {
-	t.Skip("Skipping empty pipe test - causes program exit")
+	b := createNewBuffer()
+	err := loadReaderInto(strings.NewReader(""), b)
+	if err == nil {
+		t.Error("Expected an error for an empty stream with no detectable separator")
+	}
+	if b.rowLen != 0 {
+		t.Errorf("Expected 0 rows, got %d", b.rowLen)
+	}
 }
 
 func TestLoadPipeToBuffer_LargeData(t *testing.T) {
@@ -176,9 +200,9 @@ func TestLoadPipeToBuffer_LargeData(t *testing.T) {
 	}
 
 	b := createNewBuffer()
-	err := loadPipeToBuffer(&buf, b)
+	err := loadReaderInto(&buf, b)
 	if err != nil {
-		t.Fatalf("loadPipeToBuffer() error = %v", err)
+		t.Fatalf("loadReaderInto() error = %v", err)
 	}
 
 	if b.rowLen != 1001 {
@@ -190,47 +214,55 @@ func TestLoadPipeToBuffer_LargeData(t *testing.T) {
 // Async Loading Tests
 // ========================================
 
-func TestLoadFileToBufferAsync(t *testing.T) {
+func TestIntakeAsync_File(t *testing.T) {
 	b := createNewBuffer()
-	updateChan := make(chan bool, 10)
-	doneChan := make(chan error, 1)
+	src, err := openFileSource("./data/test/large_sample.csv")
+	if err != nil {
+		t.Skipf("Test file not found: %v", err)
+	}
 
-	go loadFileToBufferAsync("./data/test/large_sample.csv", b, updateChan, doneChan)
+	first := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	var once sync.Once
+
+	intake := Intake{Source: src, OnProgress: func(rows int, loaded, total int64) {
+		once.Do(func() { first <- struct{}{} })
+	}}
+	go func() { done <- intake.Into(b) }()
 
 	select {
-	case <-updateChan:
-		t.Log("Received first update")
-	case err := <-doneChan:
+	case <-first:
+		t.Log("Received first progress report")
+	case err := <-done:
+		// Finished before the first report; there is nothing left to wait for.
 		if err != nil {
-			t.Skipf("Test file not found: %v", err)
+			t.Skipf("Async load failed: %v", err)
 		}
+		if b.rowLen == 0 {
+			t.Error("Expected data to be loaded")
+		}
+		return
 	}
 
-	err := <-doneChan
-	if err != nil {
+	if err := <-done; err != nil {
 		t.Skipf("Async load failed: %v", err)
 	}
-
 	if b.rowLen == 0 {
 		t.Error("Expected data to be loaded")
 	}
 }
 
-func TestLoadPipeToBufferAsync(t *testing.T) {
+func TestIntakeAsync_Pipe(t *testing.T) {
 	csvData := "Name,Age,City\nJohn,30,NYC\nJane,25,LA\n"
-	reader := strings.NewReader(csvData)
 
 	b := createNewBuffer()
-	updateChan := make(chan bool, 10)
-	doneChan := make(chan error, 1)
+	done := make(chan error, 1)
+	intake := Intake{Source: pipeSource(strings.NewReader(csvData))}
+	go func() { done <- intake.Into(b) }()
 
-	go loadPipeToBufferAsync(reader, b, updateChan, doneChan)
-
-	err := <-doneChan
-	if err != nil {
-		t.Fatalf("loadPipeToBufferAsync() error = %v", err)
+	if err := <-done; err != nil {
+		t.Fatalf("Intake.Into() error = %v", err)
 	}
-
 	if b.rowLen == 0 {
 		t.Error("Expected data to be loaded")
 	}
@@ -408,31 +440,43 @@ func TestLineCSVParse(t *testing.T) {
 	}
 }
 
-func TestAddDRToBuffer(t *testing.T) {
-	b := createNewBuffer()
-	b.sep = ','
+func TestVisibleFields(t *testing.T) {
+	fields := []string{"a", "b", "c", "d"}
 
 	tests := []struct {
 		name    string
-		line    string
+		show    []int
+		hide    []int
+		want    []string
 		wantErr bool
 	}{
-		{"Valid line", "John,30,NYC", false},
-		{"Empty line", "", false},
-		{"Line with quotes", `"Name","Age","City"`, false},
+		{"No selection keeps every column", nil, nil, fields, false},
+		{"Show a subset", []int{1, 3}, nil, []string{"a", "c"}, false},
+		{"Hide a subset", nil, []int{2}, []string{"a", "c", "d"}, false},
+		{"Show and hide together is an error", []int{1}, []int{2}, nil, true},
+		{"Out of range is an error", []int{9}, nil, nil, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := addDRToBuffer(b, tt.line, []int{}, []int{})
+			got, err := visibleFields(fields, tt.show, tt.hide)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("addDRToBuffer() error = %v, wantErr %v", err, tt.wantErr)
+				t.Fatalf("visibleFields() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("visibleFields() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestConcurrentCSVParsing(t *testing.T) {
+// TestIntake_PreservesRowOrder guards the property the concurrent parse used to
+// break: lines were handed to a worker pool and appended in completion order,
+// so most rows arrived out of sequence.
+func TestIntake_PreservesRowOrder(t *testing.T) {
 	lines := []string{
 		"Name,Age,City",
 		"John,30,NYC",
@@ -442,17 +486,43 @@ func TestConcurrentCSVParsing(t *testing.T) {
 	}
 
 	b := createNewBuffer()
-	b.sep = ','
-
-	for _, line := range lines {
-		err := addDRToBuffer(b, line, []int{}, []int{})
-		if err != nil {
-			t.Fatalf("addDRToBuffer() error = %v", err)
-		}
+	if err := loadReaderInto(strings.NewReader(strings.Join(lines, "\n")+"\n"), b); err != nil {
+		t.Fatalf("loadReaderInto() error = %v", err)
 	}
 
 	if b.rowLen != len(lines) {
-		t.Errorf("Expected %d rows, got %d", len(lines), b.rowLen)
+		t.Fatalf("Expected %d rows, got %d", len(lines), b.rowLen)
+	}
+	for i, line := range lines {
+		want := strings.Split(line, ",")
+		if !reflect.DeepEqual(b.cont[i], want) {
+			t.Errorf("row %d = %v, want %v", i, b.cont[i], want)
+		}
+	}
+}
+
+// TestIntake_PreservesRowOrder_AcrossBatches covers more rows than one parse
+// batch, where ordering has to hold across batch boundaries too.
+func TestIntake_PreservesRowOrder_AcrossBatches(t *testing.T) {
+	var in bytes.Buffer
+	in.WriteString("idx,payload\n")
+	const rows = 5000
+	for i := 1; i <= rows; i++ {
+		in.WriteString(I2S(i) + ",row" + I2S(i) + "\n")
+	}
+
+	b := createNewBuffer()
+	if err := loadReaderInto(&in, b); err != nil {
+		t.Fatalf("loadReaderInto() error = %v", err)
+	}
+
+	if b.rowLen != rows+1 {
+		t.Fatalf("Expected %d rows, got %d", rows+1, b.rowLen)
+	}
+	for i := 1; i <= rows; i++ {
+		if got := b.cont[i][0]; got != I2S(i) {
+			t.Fatalf("row %d holds %q, want %q (rows arrived out of order)", i, got, I2S(i))
+		}
 	}
 }
 
@@ -463,14 +533,14 @@ func TestConcurrentCSVParsing(t *testing.T) {
 func TestIntegration_FullWorkflow(t *testing.T) {
 	buf := createNewBuffer()
 
-	err := loadFileToBuffer("./data/test/numeric_data.csv", buf)
+	err := loadFileInto("./data/test/numeric_data.csv", buf)
 	if err != nil {
 		t.Skipf("Integration test skipped: %v", err)
 		return
 	}
 
 	if buf.rowLen > 1 {
-		buf.sortByStr(0, false)
+		buf.SortBy(0, false)
 	}
 
 	t.Log("Integration test completed successfully")

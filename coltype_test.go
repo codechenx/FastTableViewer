@@ -72,7 +72,7 @@ func TestAutoDetectColumnType(t *testing.T) {
 		name         string
 		data         [][]string
 		colIndex     int
-		expectedType int
+		expectedType ColumnType
 	}{
 		{
 			name: "String column",
@@ -219,7 +219,7 @@ func TestSortByNum_Performance(t *testing.T) {
 	b.setColType(1, colTypeFloat)
 
 	// Sort ascending
-	b.sortByNum(1, false)
+	b.SortBy(1, false)
 
 	// Check first and last values
 	firstVal := parseNumericValueFast(b.cont[1][1])
@@ -252,7 +252,7 @@ func TestSortByDate(t *testing.T) {
 	}
 
 	// Sort ascending by date
-	b.sortByDate(1, false)
+	b.SortBy(1, false)
 
 	// Debug: check after sort
 	t.Log("After sort:")

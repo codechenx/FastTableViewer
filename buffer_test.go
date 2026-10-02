@@ -38,7 +38,7 @@ func Test_createNewBufferWithData(t *testing.T) {
 	wantBuffer.colLen = 3
 	wantBuffer.rowLen = 4
 	wantBuffer.cont = [][]string{{"a", "b", "c"}, {"1", "2", "3"}, {"4", "5", "6"}, {"7", "8", "9"}}
-	wantBuffer.colType = []int{0, 0, 0, 0}
+	wantBuffer.colType = []ColumnType{0, 0, 0, 0}
 	tests := []struct {
 		name    string
 		args    args
@@ -133,7 +133,7 @@ func TestBuffer_sortByStr(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.b.sortByStr(tt.args.colIndex, tt.args.rev)
+			tt.b.SortBy(tt.args.colIndex, tt.args.rev)
 			if !reflect.DeepEqual(tt.b, tt.want) {
 				t.Errorf("Buffer_sortByStr() = %v, want %v", tt.b, tt.want)
 			}
@@ -149,12 +149,12 @@ func TestBuffer_SortByStr(t *testing.T) {
 	_ = b.contAppendSli([]string{"Alice"}, false)
 	_ = b.contAppendSli([]string{"Bob"}, false)
 
-	b.sortByStr(0, false)
+	b.SortBy(0, false)
 	if b.cont[1][0] != "Alice" {
 		t.Errorf("After ascending sort, first data row = %s, want Alice", b.cont[1][0])
 	}
 
-	b.sortByStr(0, true)
+	b.SortBy(0, true)
 	if b.cont[1][0] != "Charlie" {
 		t.Errorf("After descending sort, first data row = %s, want Charlie", b.cont[1][0])
 	}
@@ -167,6 +167,8 @@ func TestBuffer_sortByNum(t *testing.T) {
 	}
 	testBuffer, _ := createNewBufferWithData([][]string{{"a", "b", "c"}, {"5", "2", "3"}, {"4", "5", "6"}, {"10", "8", "9"}}, true)
 	wantBuffer, _ := createNewBufferWithData([][]string{{"a", "b", "c"}, {"4", "5", "6"}, {"5", "2", "3"}, {"10", "8", "9"}}, true)
+	testBuffer.setColType(0, colTypeFloat)
+	wantBuffer.setColType(0, colTypeFloat)
 	tests := []struct {
 		name string
 		b    *Buffer
@@ -177,7 +179,7 @@ func TestBuffer_sortByNum(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.b.sortByNum(tt.args.colIndex, tt.args.rev)
+			tt.b.SortBy(tt.args.colIndex, tt.args.rev)
 			if !reflect.DeepEqual(tt.b, tt.want) {
 				t.Errorf("Buffer_sortByNum() = %v, want %v", tt.b, tt.want)
 			}
@@ -192,13 +194,14 @@ func TestBuffer_SortByNum(t *testing.T) {
 	_ = b.contAppendSli([]string{"85.5"}, false)
 	_ = b.contAppendSli([]string{"92.3"}, false)
 	_ = b.contAppendSli([]string{"78.9"}, false)
+	b.setColType(0, colTypeFloat)
 
-	b.sortByNum(0, false)
+	b.SortBy(0, false)
 	if b.cont[1][0] != "78.9" {
 		t.Errorf("After ascending sort, first data row = %s, want 78.9", b.cont[1][0])
 	}
 
-	b.sortByNum(0, true)
+	b.SortBy(0, true)
 	if b.cont[1][0] != "92.3" {
 		t.Errorf("After descending sort, first data row = %s, want 92.3", b.cont[1][0])
 	}
@@ -256,7 +259,7 @@ func TestBuffer_GetCol(t *testing.T) {
 
 func TestBuffer_GetColType(t *testing.T) {
 	b := createNewBuffer()
-	b.colType = []int{colTypeStr, colTypeFloat, colTypeStr}
+	b.colType = []ColumnType{colTypeStr, colTypeFloat, colTypeStr}
 
 	if b.getColType(0) != colTypeStr {
 		t.Error("Expected colTypeStr for column 0")
@@ -281,8 +284,8 @@ func TestBuffer_selectBySearch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b.selectBySearch(tt.args.s)
-			if got := b.selectedCell; !reflect.DeepEqual(got, tt.want) {
+			tt.b.selectBySearch(tt.args.s)
+			if got := tt.b.selectedCell; !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("selectBySearch() = %v, want %v", got, tt.want)
 			}
 		})
