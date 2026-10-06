@@ -1,4 +1,4 @@
-module ftv
+module github.com/codechenx/FastTableViewer
 
 go 1.24.0
 

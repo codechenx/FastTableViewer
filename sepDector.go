@@ -16,20 +16,28 @@ type sepDetecor struct {
 // 4. Better validation logic
 
 func (sd *sepDetecor) sepDetect(s []string) rune {
-	if len(s) < 1 {
+	// A blank line holds none of every candidate, so counting it rejected
+	// every separator outright.
+	lines := make([]string, 0, len(s))
+	for _, line := range s {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) < 1 {
 		return 0
 	}
 
 	// Fast path: Check common separators first (99% of cases)
 	commonSeps := []rune{',', '\t', '|', ';'}
 	for _, sep := range commonSeps {
-		if sd.isValidSeparator(s, sep) {
+		if sd.isValidSeparator(lines, sep) {
 			return sep
 		}
 	}
 
 	// Fallback: Analyze all potential separators
-	return sd.detectBestSeparator(s)
+	return sd.detectBestSeparator(lines)
 }
 
 // Fast validation: Check if a separator is valid for all lines
@@ -39,19 +47,53 @@ func (sd *sepDetecor) isValidSeparator(lines []string, sep rune) bool {
 	}
 
 	// Count separator occurrences in first line
-	firstCount := countRuneFast(lines[0], sep)
+	firstCount := countRuneOutsideQuotes(lines[0], sep)
 	if firstCount == 0 {
 		return false // Separator not found
 	}
 
 	// Verify all lines have same count
 	for i := 1; i < len(lines); i++ {
-		if countRuneFast(lines[i], sep) != firstCount {
+		if countRuneOutsideQuotes(lines[i], sep) != firstCount {
 			return false
 		}
 	}
 
 	return true
+}
+
+// countRuneOutsideQuotes counts r in s, ignoring anything inside double
+// quotes. A separator within a quoted field is data rather than structure;
+// counting it made lines disagree on their column count, which rejected the
+// separator and left the file unopenable.
+func countRuneOutsideQuotes(s string, r rune) int {
+	count, inQuotes := 0, false
+	for _, c := range s {
+		switch {
+		case c == '"':
+			inQuotes = !inQuotes
+		case c == r && !inQuotes:
+			count++
+		}
+	}
+	return count
+}
+
+// modalCount returns the most common non-zero count of sep across lines, and
+// how many lines carry that count. Ties favour the larger count.
+func modalCount(lines []string, sep rune) (count, agreeing int) {
+	freq := make(map[int]int, len(lines))
+	for _, line := range lines {
+		if n := countRuneOutsideQuotes(line, sep); n > 0 {
+			freq[n]++
+		}
+	}
+	for n, c := range freq {
+		if c > agreeing || (c == agreeing && n > count) {
+			count, agreeing = n, c
+		}
+	}
+	return count, agreeing
 }
 
 // Optimized rune counter - much faster than strings.Count for single runes
@@ -71,69 +113,48 @@ func (sd *sepDetecor) detectBestSeparator(lines []string) rune {
 		return 0
 	}
 
-	// Build candidate list from first line
-	candidates := sd.getCandidates(lines[0])
+	// Consider characters from every sampled line, not just the first: a
+	// leading comment or title row would otherwise hide the real separator.
+	seen := make(map[rune]bool)
+	var candidates []rune
+	for _, line := range lines {
+		for _, r := range sd.getCandidates(line) {
+			if !seen[r] {
+				seen[r] = true
+				candidates = append(candidates, r)
+			}
+		}
+	}
 	if len(candidates) == 0 {
 		return 0
 	}
 
-	// Score each candidate
-	type candidateScore struct {
-		sep   rune
-		score int
-		count int
+	// A separator has to recur: one stray character in a single line is not
+	// structure. With only a line or two, one occurrence is all there is.
+	minAgreeing := 2
+	if len(lines) < 3 {
+		minAgreeing = 1
 	}
 
-	var scored []candidateScore
-
+	// Requiring every line to agree exactly meant one ragged row — a column
+	// pasted in by hand — rejected the separator and the file would not open.
+	// Score on how much of the sample agrees instead.
+	best, bestScore := rune(0), 0
 	for _, sep := range candidates {
-		counts := make([]int, len(lines))
-		allEqual := true
-
-		// Count occurrences in each line
-		for i, line := range lines {
-			counts[i] = countRuneFast(line, sep)
-		}
-
-		// Check if all counts are equal and non-zero
-		firstCount := counts[0]
-		if firstCount == 0 {
+		count, agreeing := modalCount(lines, sep)
+		if count == 0 || agreeing < minAgreeing {
 			continue
 		}
 
-		for i := 1; i < len(counts); i++ {
-			if counts[i] != firstCount {
-				allEqual = false
-				break
-			}
-		}
-
-		if !allEqual {
-			continue
-		}
-
-		// Calculate score based on separator quality
-		score := sd.scoreSeparator(sep, firstCount)
-		scored = append(scored, candidateScore{
-			sep:   sep,
-			score: score,
-			count: firstCount,
-		})
-	}
-
-	// Return separator with highest score
-	if len(scored) == 0 {
-		return 0
-	}
-
-	best := scored[0]
-	for _, candidate := range scored[1:] {
-		if candidate.score > best.score {
-			best = candidate
+		// Weight the separator's own priority by the share of the sample that
+		// agrees on its column count, so a consistent ';' beats a sporadic ','.
+		score := sd.scoreSeparator(sep, count) * agreeing / len(lines)
+		if score > bestScore {
+			best, bestScore = sep, score
 		}
 	}
 
-	return best.sep
+	return best
 }
 
 // Get candidate separators from first line

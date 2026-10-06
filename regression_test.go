@@ -672,3 +672,129 @@ func TestIntake_FlushesPartialBatchesWhileStreaming(t *testing.T) {
 		t.Errorf("loaded %d rows in total, want %d", total, 1+intakeDetectLines+40)
 	}
 }
+
+// ============================================================
+// Issue #25: separator detection and -s both failed
+// ============================================================
+
+// Supplying -s made the loader skip the block that reads the first lines, so
+// no rows had been appended when it signalled the UI, and the emptiness check
+// fired immediately: every forced separator reported "File is empty".
+func TestIssue25_ForcedSeparatorLoadsRows(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sep  rune
+		data string
+	}{
+		{"semicolon", ';', "name;age;city\nAlice;30;Berlin\nBob;25;Paris\n"},
+		{"tab", '\t', "name\tage\tcity\nAlice\t30\tBerlin\nBob\t25\tParis\n"},
+		{"pipe", '|', "name|age|city\nAlice|30|Berlin\nBob|25|Paris\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := createNewBuffer()
+			b.rowFreeze = 1
+
+			reportedRows := -1
+			in := Intake{
+				Source:     pipeSource(strings.NewReader(tc.data)),
+				Config:     IntakeConfig{Sep: tc.sep},
+				OnProgress: func(rows int, _, _ int64) { reportedRows = rows },
+			}
+			if err := in.Into(b); err != nil {
+				t.Fatal(err)
+			}
+
+			if b.rowLen != 3 {
+				t.Errorf("loaded %d rows, want 3", b.rowLen)
+			}
+			if b.colLen != 3 {
+				t.Errorf("found %d columns, want 3", b.colLen)
+			}
+			// The first report must already carry rows, or the caller's
+			// emptiness check sees an empty buffer and gives up.
+			if reportedRows <= 0 {
+				t.Errorf("first progress report carried %d rows, want more than 0", reportedRows)
+			}
+		})
+	}
+}
+
+// Detection required every sampled line to hold an identical number of
+// separators, so one irregular line rejected the separator and the file could
+// not be opened at all.
+func TestIssue25_DetectionToleratesIrregularLines(t *testing.T) {
+	sd := sepDetecor{}
+
+	for _, tc := range []struct {
+		name  string
+		lines []string
+		want  rune
+	}{
+		{
+			// A separator inside a quoted field is data, not structure.
+			"separator inside a quoted field",
+			[]string{`name;note;age`, `Alice;"has;semi";30`, `Bob;plain;25`, `Carol;"a;b;c";35`},
+			';',
+		},
+		{
+			// A column pasted in by hand leaves one row wider than the rest.
+			"a ragged row",
+			[]string{"a\tb\tc", "1\t2\t3", "4\t5\t6\t7", "8\t9"},
+			'\t',
+		},
+		{
+			"a blank line in the sample",
+			[]string{"id;name", "1;Alice", "", "2;Bob", "3;Carol"},
+			';',
+		},
+		{
+			// The real separator is absent from the first line entirely.
+			"a leading comment line",
+			[]string{"# exported from a tool", "name;age;city", "Alice;30;Berlin", "Bob;25;Paris"},
+			';',
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sd.sepDetect(tc.lines); got != tc.want {
+				t.Errorf("sepDetect() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Tolerance must not turn into guessing: a single column still has no
+// separator, and one stray character in one line is not structure.
+func TestIssue25_DetectionStillRefusesNonTabular(t *testing.T) {
+	sd := sepDetecor{}
+
+	for _, tc := range []struct {
+		name  string
+		lines []string
+	}{
+		{"a single alphanumeric run", []string{"justoneword", "anotherword", "thirdword"}},
+		{"no lines at all", nil},
+		{"only blank lines", []string{"", "   ", ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sd.sepDetect(tc.lines); got != 0 {
+				t.Errorf("sepDetect() = %q, want no separator", got)
+			}
+		})
+	}
+}
+
+// A consistent separator should win over one that only appears sporadically,
+// even when the sporadic one ranks higher by preference.
+func TestIssue25_ConsistencyBeatsPreference(t *testing.T) {
+	sd := sepDetecor{}
+
+	lines := []string{
+		"name;note;age",
+		"Alice;hello, world;30",
+		"Bob;plain;25",
+		"Carol;a, b, c;35",
+	}
+	if got := sd.sepDetect(lines); got != ';' {
+		t.Errorf("sepDetect() = %q, want ';' — the comma appears only in some lines", got)
+	}
+}
