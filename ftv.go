@@ -27,7 +27,7 @@ func main() {
 	args.setDefault()
 	RootCmd := &cobra.Command{
 		Use:     "ftv {File_Name}",
-		Version: "0.8",
+		Version: "0.9.0",
 		Short:   "Fast table viewer for delimited file in terminal",
 		Run:     runViewer,
 	}

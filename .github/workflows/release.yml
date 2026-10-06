@@ -30,5 +30,9 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Passed even when unset, so the AUR publisher's template resolves
+          # to an empty string and skips itself rather than aborting the
+          # release. Set the secret to start publishing to the AUR again.
+          AUR_KEY: ${{ secrets.AUR_KEY }}
           # Your GoReleaser Pro key, if you are using the 'goreleaser-pro' distribution
           # GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}

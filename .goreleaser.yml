@@ -30,7 +30,7 @@ builds:
       - -s -w -X main.version={{.Version}}
 
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_
       {{- .Version }}_
@@ -40,7 +40,7 @@ archives:
       {{- else }}{{ .Arch }}{{ end }}
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
     files:
       - LICENSE
       - README.md
@@ -49,7 +49,7 @@ checksum:
   name_template: 'checksums.txt'
 
 snapshot:
-  name_template: "{{ incpatch .Version }}-next"
+  version_template: "{{ incpatch .Version }}-next"
 
 changelog:
   sort: asc
@@ -64,7 +64,7 @@ nfpms:
   - maintainer: codechenx <codechenx@gmail.com>
     description: "Fast, feature-rich CSV/TSV/delimited file viewer for the command line"
     homepage: https://github.com/codechenx/FastTableViewer
-    license: MIT
+    license: Apache-2.0
     formats:
       - deb
       - rpm
@@ -76,7 +76,8 @@ aurs:
     description: "Fast, feature-rich CSV/TSV/delimited file viewer for the command line"
     maintainers:
       - 'codechenx <codechenx@gmail.com>'
-    license: MIT
+    license: Apache-2.0
+    skip_upload: '{{ eq .Env.AUR_KEY "" }}'
     private_key: '{{ .Env.AUR_KEY }}'
     git_url: 'ssh://aur@aur.archlinux.org/ftv-bin.git'
     package: |-
