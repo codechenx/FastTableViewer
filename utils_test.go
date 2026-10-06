@@ -175,20 +175,52 @@ func TestViewState_ToggleWrap(t *testing.T) {
 	}
 }
 
-func TestViewState_DetectWideColumns(t *testing.T) {
+func TestViewState_MeasureColumns(t *testing.T) {
 	b := createNewBuffer()
 	b.rowFreeze = 1
-	_ = b.contAppendSli([]string{"head1", "head2"}, false)
-	_ = b.contAppendSli([]string{"short", strings.Repeat("x", 80)}, false)
+	_ = b.contAppendSli([]string{"name", "note", "age"}, false)
+	_ = b.contAppendSli([]string{"Alice", strings.Repeat("x", 120), "30"}, false)
+	_ = b.contAppendSli([]string{"Bob", strings.Repeat("y", 110), "25"}, false)
+	b.detectAllColumnTypes()
 
 	v := NewViewState(b)
-	v.DetectWideColumns(100, 50)
+	v.MeasureColumns()
 
-	if _, ok := v.ColumnWidth(0); ok {
-		t.Error("a narrow column should not be limited")
+	short := v.Layout(0)
+	if short.width != len("Alice") {
+		t.Errorf("short column width = %d, want %d", short.width, len("Alice"))
 	}
-	if width, ok := v.ColumnWidth(1); !ok || width != defaultWrapWidth {
-		t.Errorf("a wide column should be limited to %d, got %d (%v)", defaultWrapWidth, width, ok)
+	if short.expand != 0 {
+		t.Errorf("a column that fits should not absorb leftover width, got expand %d", short.expand)
+	}
+	if short.rightAlign {
+		t.Error("a string column should align left")
+	}
+
+	long := v.Layout(1)
+	if long.width != maxColumnWidth {
+		t.Errorf("long column width = %d, want the %d cap", long.width, maxColumnWidth)
+	}
+	if long.expand == 0 {
+		t.Error("a column cut short by the cap should absorb leftover width")
+	}
+
+	num := v.Layout(2)
+	if !num.rightAlign {
+		t.Error("a numeric column should align right")
+	}
+	if num.width > len("age") {
+		t.Errorf("numeric column width = %d, want no wider than its header", num.width)
+	}
+}
+
+// An unmeasured column must still paint, rather than panicking on a bad index.
+func TestViewState_LayoutFallsBack(t *testing.T) {
+	v := NewViewState(createNewBuffer())
+	for _, col := range []int{-1, 0, 99} {
+		if got := v.Layout(col); got.width <= 0 {
+			t.Errorf("Layout(%d) width = %d, want a usable width", col, got.width)
+		}
 	}
 }
 

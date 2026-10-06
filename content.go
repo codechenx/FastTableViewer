@@ -5,6 +5,19 @@ import (
 	"github.com/rivo/tview"
 )
 
+// The table's palette. Kept together so the whole surface can be retuned in
+// one place rather than by hunting literals through the painting code.
+var (
+	cellTextColor   = tcell.NewRGBColor(220, 226, 235)
+	headerTextColor = tcell.NewRGBColor(226, 238, 255)
+	headerBackColor = tcell.NewRGBColor(28, 52, 94)
+	stripeBackColor = tcell.NewRGBColor(24, 28, 36)
+	rowLabelColor   = tcell.NewRGBColor(236, 206, 140)
+	filterMarkColor = tcell.NewRGBColor(236, 148, 56)
+	matchBackColor  = tcell.NewRGBColor(0, 170, 205)
+	otherMatchColor = tcell.NewRGBColor(86, 92, 132)
+)
+
 // bufferContent presents the view's buffer to tview on demand: tview asks for
 // the cells it is about to paint, and only those are built.
 //
@@ -48,65 +61,75 @@ func (bufferContent) GetCell(row, column int) *tview.TableCell {
 	rowFreeze, colFreeze := b.rowFreeze, b.colFreeze
 	b.mu.RUnlock()
 
-	color := tcell.ColorWhite
+	layout := view.Layout(column)
+
+	color := cellTextColor
 	backgroundColor := tcell.ColorDefault
 	attributes := tcell.AttrNone
 	alignment := tview.AlignLeft
+	if layout.rightAlign {
+		alignment = tview.AlignRight
+	}
 
 	// Check if this is a header row/column (frozen area)
 	isHeaderRow := row < rowFreeze && args.Header != -1 && args.Header != 2
 	isHeaderCol := column < colFreeze
 
 	// Modern header styling with rich visual design
-	if isHeaderRow {
-		// Main header row: bold white text on gradient blue background
-		color = tcell.ColorWhite
-		backgroundColor = tcell.NewRGBColor(30, 60, 120) // Deep blue
-		attributes = tcell.AttrBold | tcell.AttrUnderline
-		alignment = tview.AlignCenter
-
-		// Add filter indicator if this column has a filter applied
-		if _, hasFilter := view.FilterAt(column); hasFilter {
-			cellText = "🔎 " + cellText + " 🔎"
-			backgroundColor = tcell.NewRGBColor(255, 100, 0) // Orange for a filtered column
-		}
-	} else if isHeaderCol {
-		// Frozen column: gold color for row headers
-		color = tcell.NewRGBColor(255, 215, 0) // Gold
+	switch {
+	case isHeaderRow:
+		// The header takes the column's own alignment, so a numeric heading
+		// sits over its digits instead of floating in the middle of the field.
+		color = headerTextColor
+		backgroundColor = headerBackColor
 		attributes = tcell.AttrBold
+
+		if _, hasFilter := view.FilterAt(column); hasFilter {
+			cellText = "▼ " + cellText
+			backgroundColor = filterMarkColor
+			color = tcell.ColorBlack
+		}
+
+	default:
+		// Zebra striping: alternate data rows carry a slightly lifted
+		// background, which is what makes a wide row easy to follow across.
+		if (row-rowFreeze)%2 == 1 {
+			backgroundColor = stripeBackColor
+		}
+		if isHeaderCol {
+			// The frozen column reads as a row label: lifted, not shouting.
+			color = rowLabelColor
+		}
 	}
 
 	// Modern search match highlighting (overrides header styling)
 	if isSearchMatch, isCurrentMatch := view.MatchAt(row, column); isSearchMatch {
 		if isCurrentMatch {
-			// Current match: vibrant cyan highlight
-			backgroundColor = tcell.NewRGBColor(0, 180, 216)
+			backgroundColor = matchBackColor
 			color = tcell.ColorBlack
 			attributes = tcell.AttrBold
 		} else {
-			// Other matches: soft purple highlight
-			backgroundColor = tcell.NewRGBColor(100, 100, 150)
+			backgroundColor = otherMatchColor
 			color = tcell.ColorWhite
 			attributes = tcell.AttrNone
 		}
 	}
 
-	// Determine max width for this column
-	maxWidth := 0
-	if width, isWrapped := view.ColumnWidth(column); isWrapped {
-		maxWidth = width
-		cellText = truncateText(cellText, maxWidth)
+	// The measured width governs, unless the user pinned one with 'W'.
+	width := layout.width
+	if pinned, isPinned := view.ColumnWidth(column); isPinned && pinned < width {
+		width = pinned
 	}
 
-	cell := tview.NewTableCell(cellText).
+	// A space either side keeps values off the column separators. Without it
+	// the tightened columns read as one run of characters.
+	cellText = " " + truncateText(cellText, width) + " "
+
+	return tview.NewTableCell(cellText).
 		SetTextColor(color).
 		SetBackgroundColor(backgroundColor).
 		SetAttributes(attributes).
 		SetAlign(alignment).
-		SetExpansion(1)
-
-	if maxWidth > 0 {
-		cell.SetMaxWidth(maxWidth)
-	}
-	return cell
+		SetExpansion(layout.expand).
+		SetMaxWidth(width + 2)
 }

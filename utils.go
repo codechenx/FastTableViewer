@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/fatih/color"
 )
@@ -290,4 +291,10 @@ func progressBar(percent float64, width int) string {
 		filled = 1
 	}
 	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+}
+
+// runeCount returns the number of runes in s, an adequate stand-in for display
+// width when sizing a column.
+func runeCount(s string) int {
+	return utf8.RuneCountInString(s)
 }

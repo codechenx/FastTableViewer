@@ -83,13 +83,19 @@ Comparison operators (`>`, `<`, `>=`, `<=`) use the column type's parser, so dat
 
 ### Stats (`stats.go`)
 
+Both plots are horizontal bars drawn by `barChart`, bounded by `chartLabelWidth`/`chartBarWidth` so they fit the panel's pane. They went through asciigraph, which draws a *line* through the values, so a frequency distribution came out as a near-flat line; dropping it also dropped the dependency. `DiscreteStats.ranked` is the one frequency ordering, ties broken by value so runs agree, and `calculateMode` breaks ties the same way — reading the map's first maximum made the reported mode change between runs. `formatStat` keeps whole numbers whole rather than reporting a minimum of "25.0000".
+
+A dialog sizes itself with `panelHeight` and pads with `backdrop()` rather than `nil`: a nil Flex item paints nothing, so the table showed through around a panel.
+
 `statsSummary` has two adapters, `ContinuousStats` and `DiscreteStats`. Its interface carries an **ordering constraint**: `summary(col)` populates internal fields, so `getSummaryData()` and `getPlot()` return empty/"No data to plot" if called first. `ui.go` calls `summary` before `showStatsDialog`. This is the one module not yet deepened.
 
 ### UI (`ui.go`)
 
 `drawUI()` runs once after the first rows land and wires everything: it builds `bufferTable` and installs one large `SetInputCapture` closure holding every key binding, plus mouse and selection handlers. Search and filter modals are built inline there.
 
-**The table is virtual.** `bufferContent` in `content.go` implements tview's `TableContent`, so cells are built only as they are painted, and it is the single place header styling, match highlighting, filter markers and truncation are decided. There is deliberately no full-table painter: materialising every cell cost roughly 1.7KB per row, so a 48MB file needed about 2GB and a third of a second per repaint, and the UI could not keep up with a load. Nothing needs to repaint after a state change — tview redraws after each event and pulls what it needs.
+**The table is virtual.** `bufferContent` in `content.go` implements tview's `TableContent`, so cells are built only as they are painted, and it is the single place header styling, zebra striping, match highlighting, filter markers, alignment and truncation are decided. The palette lives in one `var` block at the top of that file.
+
+Column width and alignment come from `ViewState.MeasureColumns`, which samples the header and up to `measureRows` values: a column asks for the width its content needs, numbers and dates align right, and only a column truncated by `maxColumnWidth` takes a share of leftover width. Every column used to get an equal share, so a two-character number sat in a seventeen-character field. **Measurement has to be repeated as rows arrive** — `drawUI` runs as soon as the first batch lands, so measuring only there sizes every column from about ten rows; `refreshWhileLoading` re-measures periodically and once more on completion. There is deliberately no full-table painter: materialising every cell cost roughly 1.7KB per row, so a 48MB file needed about 2GB and a third of a second per repaint, and the UI could not keep up with a load. Nothing needs to repaint after a state change — tview redraws after each event and pulls what it needs.
 
 While loading, `refreshWhileLoading` repaints only the footer, on a 20 ms ticker, showing a determinate bar when the source size is known and a spinner with a row tally when it is not (a stream or a `.gz`, where no honest percentage exists). `buildLoadingStatus` renders it and `drawFooter` is the one footer renderer — the loading path used to rebuild the footer itself, in a different palette and without the filter strip.
 

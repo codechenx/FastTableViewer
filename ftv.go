@@ -16,6 +16,10 @@ var errNoInput = errors.New("no input")
 const (
 	// progressRefreshInterval is how often the loading readout is repainted.
 	progressRefreshInterval = 20 * time.Millisecond
+
+	// measureEveryTicks is how many refresh ticks pass between re-measuring
+	// the columns while rows stream in.
+	measureEveryTicks = 25
 )
 
 func main() {
@@ -197,8 +201,13 @@ func refreshWhileLoading(done <-chan error) {
 			}
 			rows, _, _, _ := loadProgress.Snapshot()
 			app.QueueUpdateDraw(func() {
-				// Column types are detected as the load finishes, so refresh
-				// the readout rather than leaving the pre-load one on screen.
+				// Column widths and types are only knowable once the rows are
+				// in, and drawUI measured them as soon as the first batch
+				// landed. Measure again, and refresh the readout rather than
+				// leaving the pre-load one on screen.
+				view.MeasureColumns()
+				fileNameStr = buildFileInfoStr()
+
 				row, col := bufferTable.GetSelection()
 				cursorPosStr = buildCursorPosStr(row, col)
 				updateFooterWithStatus("Loaded " + formatCount(rows) + " rows")
@@ -207,7 +216,15 @@ func refreshWhileLoading(done <-chan error) {
 
 		case <-ticker.C:
 			tick++
+			// Widen columns to fit as longer values arrive, rather than
+			// leaving them at whatever the first batch happened to need.
+			remeasure := tick%measureEveryTicks == 0
+
 			app.QueueUpdateDraw(func() {
+				if remeasure {
+					view.MeasureColumns()
+					fileNameStr = buildFileInfoStr()
+				}
 				// Keep the cursor on the first row until the user moves it.
 				if !userMovedCursor {
 					row, col := bufferTable.GetSelection()

@@ -26,13 +26,29 @@ type ViewState struct {
 	resultSet map[[2]int]bool
 	resultAt  int // index into results, -1 when there is no current match
 
-	wrapped map[int]int // column -> max width
+	wrapped map[int]int // column -> explicit width limit set with 'W'
+	layouts []columnLayout
 
 	cursorCol int
 }
 
-// defaultWrapWidth is the width a limited column is held to.
-const defaultWrapWidth = 50
+// columnLayout is how the table paints one column: how wide it naturally wants
+// to be, which way its values align, and whether it absorbs leftover width.
+type columnLayout struct {
+	width      int
+	rightAlign bool
+	expand     int
+}
+
+const (
+	// defaultWrapWidth is the width a limited column is held to.
+	defaultWrapWidth = 50
+
+	// Bounds for a measured column, and how many rows are sampled to measure.
+	minColumnWidth = 3
+	maxColumnWidth = 48
+	measureRows    = 250
+)
 
 // NewViewState returns a view over b with nothing filtered and nothing found.
 func NewViewState(b *Buffer) *ViewState {
@@ -279,36 +295,71 @@ func (v *ViewState) ToggleWrap(col int) (int, bool) {
 	return defaultWrapWidth, true
 }
 
-// DetectWideColumns limits any column whose sampled content exceeds threshold,
-// leaving columns already set by hand alone.
-func (v *ViewState) DetectWideColumns(sampleSize, threshold int) {
+// Layout returns how a column should be painted. An unmeasured column falls
+// back to a plain left-aligned column that absorbs leftover width.
+func (v *ViewState) Layout(col int) columnLayout {
+	if col < 0 || col >= len(v.layouts) {
+		return columnLayout{width: maxColumnWidth, expand: 1}
+	}
+	return v.layouts[col]
+}
+
+// MeasureColumns sizes and aligns every column from its header and a sample of
+// its values.
+//
+// Each column used to be given an equal share of the terminal, so a
+// two-character number sat in a seventeen-character field, and every value was
+// left-aligned so digits never lined up. A column now asks for the width its
+// content needs, numbers and dates align right, and only a column whose content
+// was truncated takes a share of the space left over.
+func (v *ViewState) MeasureColumns() {
 	b := v.visible
 
 	b.mu.RLock()
-	maxSample := sampleSize
-	if b.rowLen < maxSample {
-		maxSample = b.rowLen
+	colLen, rowFreeze := b.colLen, b.rowFreeze
+	limit := rowFreeze + measureRows
+	if limit > b.rowLen {
+		limit = b.rowLen
 	}
-	startRow := b.rowFreeze
 
-	maxLengths := make([]int, b.colLen)
-	for r := startRow; r < maxSample; r++ {
-		for c := 0; c < b.colLen && c < len(b.cont[r]); c++ {
-			if cellLen := len(b.cont[r][c]); cellLen > maxLengths[c] {
-				maxLengths[c] = cellLen
+	widths := make([]int, colLen)
+	if rowFreeze > 0 && len(b.cont) > 0 {
+		for c := 0; c < colLen && c < len(b.cont[0]); c++ {
+			widths[c] = runeCount(b.cont[0][c])
+		}
+	}
+	for r := rowFreeze; r < limit; r++ {
+		row := b.cont[r]
+		for c := 0; c < colLen && c < len(row); c++ {
+			if n := runeCount(row[c]); n > widths[c] {
+				widths[c] = n
 			}
 		}
 	}
+
+	types := make([]ColumnType, colLen)
+	for c := 0; c < colLen && c < len(b.colType); c++ {
+		types[c] = b.colType[c]
+	}
 	b.mu.RUnlock()
 
-	for c, length := range maxLengths {
-		if length <= threshold {
-			continue
+	layouts := make([]columnLayout, colLen)
+	for c := range layouts {
+		width, expand := widths[c], 0
+		if width < minColumnWidth {
+			width = minColumnWidth
 		}
-		if _, set := v.wrapped[c]; !set {
-			v.wrapped[c] = defaultWrapWidth
+		if width > maxColumnWidth {
+			// Only a column that had to be cut short benefits from more room.
+			width, expand = maxColumnWidth, 1
+		}
+		layouts[c] = columnLayout{
+			width:      width,
+			rightAlign: types[c] == colTypeFloat || types[c] == colTypeDate,
+			expand:     expand,
 		}
 	}
+	v.layouts = layouts
 }
 
 // SetCursorColumn records where the cursor is.

@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
-	"strconv"
+	"strings"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -65,14 +65,46 @@ func buildLoadingStatus(rows int, loaded, total int64, tick int) string {
 		progressBar(percent, progressBarWidth), percent, formatCount(rows))
 }
 
+// backdropColor dims whatever a dialog is covering.
+var backdropColor = tcell.NewRGBColor(12, 14, 18)
+
+// backdrop returns a spacer that actually paints. A nil Flex item is skipped
+// entirely, which is why the table showed through around a panel.
+func backdrop() *tview.Box {
+	return tview.NewBox().SetBackgroundColor(backdropColor)
+}
+
+// buildFileInfoStr names the source and its shape, so the size of what is
+// loaded is visible without opening the stats panel.
+func buildFileInfoStr() string {
+	rows, cols := view.Dims()
+	rowFreeze, _ := view.Freeze()
+
+	return fmt.Sprintf("%s  %s×%d  ·  ? help",
+		filepath.Base(args.FileName), formatCount(rows-rowFreeze), cols)
+}
+
 // visibleRows and visibleCols are the bounds navigation clamps against.
 func visibleRows() int { rows, _ := view.Dims(); return rows }
 func visibleCols() int { _, cols := view.Dims(); return cols }
 
-// buildCursorPosStr builds the cursor position string (without filter info now)
+// buildCursorPosStr names where the cursor is and what it is sitting in. The
+// old readout was "Column Type: Str  |  0,0": a bare pair of indices with no
+// totals to measure them against, and no name for the column they referred to.
 func buildCursorPosStr(row, column int) string {
-	posStr := "Column Type: " + type2name(view.ColType(column)) + "  |  " + strconv.Itoa(row) + "," + strconv.Itoa(column) + "  "
-	return posStr
+	rows, cols := view.Dims()
+	rowFreeze, _ := view.Freeze()
+
+	// Report the position within the data, counting from one.
+	dataRow := row - rowFreeze + 1
+	dataRows := rows - rowFreeze
+
+	where := fmt.Sprintf("r%s/%s  c%d/%d", formatCount(dataRow), formatCount(dataRows), column+1, cols)
+	if dataRow < 1 {
+		where = fmt.Sprintf("header  c%d/%d", column+1, cols)
+	}
+
+	return fmt.Sprintf("%s · %s   %s  ", view.ColumnName(column), type2name(view.ColType(column)), where)
 }
 
 // buildFilterInfoStr builds the filter information string for the top strip
@@ -140,16 +172,15 @@ func drawUI() error {
 		Background(tcell.NewRGBColor(80, 120, 160)). // Darker, muted blue
 		Attributes(tcell.AttrBold))
 
-	// Auto-detect and wrap long columns (sample first 100 rows, threshold 50 characters)
-	view.DetectWideColumns(100, 50)
+	// Size and align the columns from their content.
+	view.MeasureColumns()
 
 	//main page init with modern styling
 	cursorPosStr = buildCursorPosStr(0, 0) //footer right
 	if statusMessage == "" {
 		statusMessage = "All Done"
 	}
-	shorFileName := filepath.Base(args.FileName)
-	fileNameStr = shorFileName + "  |  " + "? help" //footer left
+	fileNameStr = buildFileInfoStr() //footer left
 
 	mainPage = tview.NewFrame(bufferTable).
 		SetBorders(0, 0, 0, 0, 0, 0)
@@ -815,6 +846,31 @@ func showHelpDialog() {
 	app.SetFocus(helpText)
 }
 
+// panelHeight is the height the stats panel needs for its contents, bounded by
+// the screen.
+func panelHeight(s statsSummary) int {
+	rows := len(s.getSummaryData()) + 2 // borders
+	if plot := strings.Count(s.getPlot(), "\n") + 3; plot > rows {
+		rows = plot
+	}
+
+	// The frame's laid-out rect is the usable height; it is set once drawUI has
+	// run, which is always the case by the time a panel opens.
+	limit := 24
+	if mainPage != nil {
+		if _, _, _, h := mainPage.GetRect(); h > 10 {
+			limit = h - 6
+		}
+	}
+	if rows > limit {
+		rows = limit
+	}
+	if rows < 8 {
+		rows = 8
+	}
+	return rows
+}
+
 // showStatsDialog displays column statistics as a centered modal dialog
 func showStatsDialog(statsS statsSummary, columnName string, colType ColumnType) {
 	// Create stats table
@@ -923,21 +979,22 @@ func showStatsDialog(statsS statsSummary, columnName string, colType ColumnType)
 		return event
 	})
 
-	// Create a centered modal with the stats content
-	// Modal dimensions: 80% width, 80% height
+	// Size the panel to what it actually holds. At a fixed 80% of the screen
+	// a six-row summary left most of the box empty.
 	statsModal := tview.NewFlex().
-		AddItem(nil, 0, 1, false).
+		AddItem(backdrop(), 0, 1, false).
 		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
-			AddItem(nil, 0, 1, false).
-			AddItem(statsContent, 0, 80, true).
+			AddItem(backdrop(), 0, 1, false).
+			AddItem(statsContent, panelHeight(statsS), 0, true).
 			AddItem(tview.NewTextView().
 				SetText("Press q or Esc to close").
 				SetTextAlign(tview.AlignCenter).
 				SetTextColor(tcell.NewRGBColor(150, 150, 150)), 1, 0, false).
-			AddItem(nil, 0, 1, false), 0, 80, true).
-		AddItem(nil, 0, 1, false)
+			AddItem(backdrop(), 0, 1, false), 0, 80, true).
+		AddItem(backdrop(), 0, 1, false)
 
 	// Add and show the stats dialog
+	statsModal.SetFullScreen(true)
 	UI.AddPage("statsDialog", statsModal, true, true)
 	app.SetFocus(statsContent)
 }

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"fmt"
+	"math"
 	"sort"
+	"strconv"
+	"strings"
 
-	"github.com/guptarohit/asciigraph"
 	"github.com/montanaflynn/stats"
 )
 
@@ -75,26 +78,29 @@ func (s *ContinuousStats) summary(a []string) {
 		{"Valid numbers", I2S(s.count)},
 		{"Missing/Invalid", I2S(s.missing)},
 		{"", ""},
-		{"Min", F2S(s.min)},
-		{"Max", F2S(s.max)},
-		{"Range", F2S(s.max - s.min)},
-		{"Sum", F2S(s.sum)},
+		{"Min", formatStat(s.min)},
+		{"Max", formatStat(s.max)},
+		{"Range", formatStat(s.max - s.min)},
+		{"Sum", formatStat(s.sum)},
 		{"", ""},
-		{"Mean", F2S(s.mean)},
-		{"Median", F2S(s.median)},
-		{"Mode", F2S(s.mode) + " (" + I2S(s.modeCount) + "x)"},
+		{"Mean", formatStat(s.mean)},
+		{"Median", formatStat(s.median)},
+		{"Mode", describeMode(s.mode, s.modeCount)},
 		{"", ""},
-		{"Std Dev", F2S(s.sd)},
-		{"Variance", F2S(s.variance)},
+		{"Std Dev", formatStat(s.sd)},
+		{"Variance", formatStat(s.variance)},
 		{"", ""},
-		{"Q1 (25%)", F2S(s.q1)},
-		{"Q2 (50%)", F2S(s.q2)},
-		{"Q3 (75%)", F2S(s.q3)},
-		{"IQR", F2S(s.iqr)},
+		{"Q1 (25%)", formatStat(s.q1)},
+		{"Q2 (50%)", formatStat(s.q2)},
+		{"Q3 (75%)", formatStat(s.q3)},
+		{"IQR", formatStat(s.iqr)},
 	}
 	s.summaryData = summaryArray
 }
 
+// calculateMode returns the most frequent value and how often it occurs. Ties
+// go to the smallest value: picking whichever the map happened to yield first
+// meant the reported mode changed between runs on the same data.
 func calculateMode(data []float64) (float64, int) {
 	if len(data) == 0 {
 		return 0, 0
@@ -108,12 +114,10 @@ func calculateMode(data []float64) (float64, int) {
 	var mode float64
 	maxCount := 0
 	for k, v := range freq {
-		if v > maxCount {
-			maxCount = v
-			mode = k
+		if v > maxCount || (v == maxCount && k < mode) {
+			mode, maxCount = k, v
 		}
 	}
-
 	return mode, maxCount
 }
 
@@ -171,13 +175,48 @@ func (s *ContinuousStats) getPlot() string {
 		bins[binIndex]++
 	}
 
-	// Generate the plot
-	plot := asciigraph.Plot(bins,
-		asciigraph.Height(15),
-		asciigraph.Width(60),
-		asciigraph.Caption("Distribution Histogram"))
+	// Label each bin by the range it covers, so the axis is readable rather
+	// than implied.
+	decimals := 0
+	if binWidth < 1 {
+		decimals = 2
+	}
 
-	return plot
+	rows := make([]barRow, 0, numBins)
+	total := float64(len(s.data))
+	for i, count := range bins {
+		low := s.min + float64(i)*binWidth
+		rows = append(rows, barRow{
+			label: strconv.FormatFloat(low, 'f', decimals, 64),
+			value: count,
+			note:  fmt.Sprintf("%d (%.0f%%)", int(count), count/total*100),
+		})
+	}
+
+	return barChart(rows, chartBarWidth)
+}
+
+// kv pairs a value with how often it occurs.
+type kv struct {
+	Key   string
+	Value int
+}
+
+// ranked returns the distinct values ordered by descending frequency, ties
+// broken by value so repeated runs agree. The three places that needed this
+// each built and sorted their own copy, and map order left ties unstable.
+func (s *DiscreteStats) ranked() []kv {
+	out := make([]kv, 0, len(s.counter))
+	for k, v := range s.counter {
+		out = append(out, kv{k, v})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Value != out[j].Value {
+			return out[i].Value > out[j].Value
+		}
+		return out[i].Key < out[j].Key
+	})
+	return out
 }
 
 func (s *DiscreteStats) summary(a []string) {
@@ -197,20 +236,7 @@ func (s *DiscreteStats) summary(a []string) {
 
 	s.unique = len(s.counter)
 
-	type kv struct {
-		Key   string
-		Value int
-	}
-
-	// Sort map by value (frequency)
-	var ss []kv
-	for k, v := range s.counter {
-		ss = append(ss, kv{k, v})
-	}
-
-	sort.Slice(ss, func(i, j int) bool {
-		return ss[i].Value > ss[j].Value
-	})
+	ss := s.ranked()
 
 	// Build summary with overview first
 	s.summaryData = [][]string{
@@ -243,7 +269,7 @@ func (s *DiscreteStats) summary(a []string) {
 		percent := float64(kv.Value) / float64(s.count) * 100
 		s.summaryData = append(s.summaryData, []string{
 			displayKey,
-			I2S(kv.Value) + " (" + F2S(percent) + "%)",
+			I2S(kv.Value) + " (" + formatStat(percent) + "%)",
 		})
 	}
 }
@@ -261,64 +287,117 @@ func (s *DiscreteStats) getSummaryStr(a []string) string {
 		result = result + "#" + n + " : " + v + "\n"
 	}
 	result = result + "----------\n" + "Top 20 variable\n\n"
-	type kv struct {
-		Key   string
-		Value int
-	}
 
-	//sortByStr map by value
-	var ss []kv
-	for k, v := range s.counter {
-		ss = append(ss, kv{k, v})
-	}
-
-	sort.Slice(ss, func(i, j int) bool {
-		return ss[i].Value > ss[j].Value
-	})
-
-	for _, kv := range ss {
+	for _, kv := range s.ranked() {
 		result = result + "#" + kv.Key + " : " + I2S(kv.Value) + "\n"
 	}
 
 	return result
 }
 
-// getPlot generates a bar chart visualization for discrete data
+// getPlot draws the most frequent values as bars.
 func (s *DiscreteStats) getPlot() string {
 	if len(s.counter) == 0 {
 		return "No data to plot"
 	}
 
-	// Sort by frequency
-	type kv struct {
-		Key   string
-		Value int
-	}
-	var ss []kv
-	for k, v := range s.counter {
-		ss = append(ss, kv{k, v})
-	}
-	sort.Slice(ss, func(i, j int) bool {
-		return ss[i].Value > ss[j].Value
-	})
-
-	// Take top 15 values for the plot
-	maxDisplay := 15
-	if len(ss) < maxDisplay {
-		maxDisplay = len(ss)
+	ranked := s.ranked()
+	if len(ranked) > 15 {
+		ranked = ranked[:15]
 	}
 
-	// Prepare data for plotting
-	frequencies := make([]float64, maxDisplay)
-	for i := 0; i < maxDisplay; i++ {
-		frequencies[i] = float64(ss[i].Value)
+	rows := make([]barRow, 0, len(ranked))
+	total := float64(s.count)
+	for _, kv := range ranked {
+		label := kv.Key
+		if label == "" {
+			label = "(empty)"
+		}
+		rows = append(rows, barRow{
+			label: label,
+			value: float64(kv.Value),
+			note:  fmt.Sprintf("%d (%.0f%%)", kv.Value, float64(kv.Value)/total*100),
+		})
 	}
 
-	// Generate the plot
-	plot := asciigraph.Plot(frequencies,
-		asciigraph.Height(12),
-		asciigraph.Width(60),
-		asciigraph.Caption("Top Values Frequency"))
+	return barChart(rows, chartBarWidth)
+}
 
-	return plot
+// describeMode reports the most common value, or says plainly that there is no
+// repeated value rather than presenting an arbitrary one as "the mode".
+func describeMode(mode float64, count int) string {
+	if count <= 1 {
+		return "none (all distinct)"
+	}
+	return formatStat(mode) + " (×" + I2S(count) + ")"
+}
+
+const (
+	// The chart has to fit the stats panel's right-hand pane, so its parts are
+	// bounded rather than sized by their content.
+	chartLabelWidth = 11
+	chartBarWidth   = 16
+)
+
+// barRow is one labelled bar in a chart.
+type barRow struct {
+	label string
+	value float64
+	note  string
+}
+
+// barChart draws labelled horizontal bars, scaled to the largest value.
+//
+// Both plots used to go through asciigraph, which draws a *line* through the
+// values: a frequency distribution came out as a near-flat line that said
+// nothing. Bars are what a histogram and a value count actually are.
+func barChart(rows []barRow, barWidth int) string {
+	if len(rows) == 0 {
+		return "No data to plot"
+	}
+
+	labelWidth, noteWidth, maxValue := 0, 0, 0.0
+	for _, r := range rows {
+		if n := runeCount(r.label); n > labelWidth {
+			labelWidth = n
+		}
+		if n := runeCount(r.note); n > noteWidth {
+			noteWidth = n
+		}
+		if r.value > maxValue {
+			maxValue = r.value
+		}
+	}
+	if labelWidth > chartLabelWidth {
+		labelWidth = chartLabelWidth
+	}
+	if maxValue <= 0 {
+		maxValue = 1
+	}
+
+	var out strings.Builder
+	for _, r := range rows {
+		label := truncateText(r.label, labelWidth)
+		filled := int(r.value / maxValue * float64(barWidth))
+		if filled == 0 && r.value > 0 {
+			filled = 1
+		}
+
+		out.WriteString(fmt.Sprintf("%-*s %s%s %*s\n",
+			labelWidth, label,
+			strings.Repeat("█", filled),
+			strings.Repeat(" ", barWidth-filled),
+			noteWidth, r.note))
+	}
+	return out.String()
+}
+
+// formatStat renders a statistic without trailing zeros, so a column of whole
+// numbers does not report its minimum as "25.0000".
+func formatStat(f float64) string {
+	if f == math.Trunc(f) && math.Abs(f) < 1e15 {
+		return strconv.FormatFloat(f, 'f', 0, 64)
+	}
+	s := strconv.FormatFloat(f, 'f', 4, 64)
+	return strings.TrimSuffix(strings.TrimRight(s, "0"), ".")
 }
