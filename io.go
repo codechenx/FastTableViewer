@@ -200,36 +200,6 @@ func splitFieldsInto(s string, sep rune, block []string) (row, out []string) {
 	return block[start:len(block):len(block)], block
 }
 
-// Fast CSV parser for simple cases (no quotes, no escaping)
-// Falls back to standard parser if needed
-func lineCSVParseFast(s string, sep rune) ([]string, error) {
-	// Use fast path for simple CSV lines
-	if !hasQuotes(s) {
-		// Count separators to pre-allocate slice
-		sepCount := 0
-		for i := 0; i < len(s); i++ {
-			if rune(s[i]) == sep {
-				sepCount++
-			}
-		}
-
-		result := make([]string, 0, sepCount+1)
-		start := 0
-		for i := 0; i < len(s); i++ {
-			if rune(s[i]) == sep {
-				result = append(result, s[start:i])
-				start = i + 1
-			}
-		}
-		// Add last field
-		result = append(result, s[start:])
-		return result, nil
-	}
-
-	// Fall back to standard parser for complex cases
-	return lineCSVParse(s, sep)
-}
-
 // openFileSource opens a delimited file, transparently decompressing .gz, and
 // returns it as a Source. The Source owns the file handle and closes it, which
 // nothing did when a bare scanner was handed out instead.

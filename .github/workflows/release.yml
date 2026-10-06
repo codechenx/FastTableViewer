@@ -2,10 +2,8 @@ name: release
 
 on:
   push:
-    tags:        
+    tags:
       - '**'
-    branches:
-      - master
 
 jobs:
   goreleaser:
@@ -18,7 +16,9 @@ jobs:
           fetch-depth: 0
       -
         name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
       -
         name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6

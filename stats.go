@@ -383,11 +383,11 @@ func barChart(rows []barRow, barWidth int) string {
 			filled = 1
 		}
 
-		out.WriteString(fmt.Sprintf("%-*s %s%s %*s\n",
+		fmt.Fprintf(&out, "%-*s %s%s %*s\n",
 			labelWidth, label,
 			strings.Repeat("█", filled),
 			strings.Repeat(" ", barWidth-filled),
-			noteWidth, r.note))
+			noteWidth, r.note)
 	}
 	return out.String()
 }

@@ -5,11 +5,16 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # Pin the linter rather than tracking "latest". The action's own
+        # "latest" resolved to golangci-lint 1.64.8, which cannot read the
+        # export data of a Go 1.24+ standard library, so every run failed
+        # typechecking with "export data version 4 is greater than maximum
+        # supported version 2" and reported every stdlib import as unresolved.
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.14.0

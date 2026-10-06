@@ -17,7 +17,9 @@ pixi run gofmt -l .                 # must print nothing
 
 `make build|test|check|clean|install|snapshot` wrap the same thing but call bare `go`, so they need pixi's env active (`pixi shell`) or a system Go. `make lint` requires `golangci-lint`, which is not installed locally — CI (`.github/workflows/linter.yml`) runs it on every push.
 
-CI tests against Go 1.21–1.25, so avoid language/stdlib features newer than 1.21.
+CI's matrix names Go 1.21–1.25, but `go.mod` declares `go 1.24.0`, so a 1.21–1.23 runner downloads a 1.24 toolchain and tests on that. **The effective floor is 1.24**, and the three lower matrix entries prove nothing about older releases — don't hold back a 1.22 or 1.23 feature on their account.
+
+`golangci-lint` is pinned in `.github/workflows/linter.yml` rather than tracking `latest`: the action's own "latest" resolved to 1.64.8, which cannot read a Go 1.24+ standard library's export data and failed every run with `export data version 4 is greater than maximum supported version 2`, reporting every stdlib import as unresolved. Run it locally with the same version before blaming the code. Coverage upload steps are `continue-on-error`, so a third-party outage cannot fail the build.
 
 Test fixtures live in `data/test/` (CSV, TSV, gzip, pipe-delimited, quoted, ragged, empty, header-only). Prefer adding a fixture there over constructing files in test code.
 

@@ -10,13 +10,17 @@ jobs:
         go: ['1.21', '1.22', '1.23', '1.24', '1.25']
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go }}
-      - run: go test -v -coverprofile=profile.cov ./...
+      - run: go test -v -race -coverprofile=profile.cov ./...
 
+      # Coverage reporting must not decide whether the code is good: the
+      # upload is a third-party service call, so a bad day there is not a
+      # broken build.
       - name: Send coverage
+        continue-on-error: true
         uses: shogo82148/actions-goveralls@v1
         with:
           path-to-profile: profile.cov
@@ -28,6 +32,11 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
+      # The per-job uploads succeed, but this aggregation step reports "No
+      # build matching CI build number <run id> found" because it looks the
+      # build up by a different number than the uploads registered under.
+      # That failed the whole workflow while every test job passed.
       - uses: shogo82148/actions-goveralls@v1
+        continue-on-error: true
         with:
           parallel-finished: true
