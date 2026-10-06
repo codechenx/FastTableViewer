@@ -7,7 +7,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ['1.21', '1.22', '1.23', '1.24', '1.25']
+        # go.mod declares go 1.24.0, so these are the releases that can
+        # actually build it. The matrix used to name 1.21-1.23 as well, and
+        # those jobs passed only because setup-go@v5 let the toolchain
+        # silently download 1.24 and test on that instead; @v6 pins
+        # GOTOOLCHAIN=local, which turned the pretence into a hard failure.
+        go: ['1.24', '1.25']
 
     steps:
       - uses: actions/checkout@v5
