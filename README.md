@@ -110,7 +110,7 @@ sudo snap alias codechenx-tv ftv
 **Go Install**
 
 ```bash
-go install github.com/codechenx/FastTableViewer@latest
+go install github.com/codechenx/FastTableViewer/cmd/ftv@latest
 ```
 
 

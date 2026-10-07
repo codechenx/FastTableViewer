@@ -478,7 +478,7 @@ func TestBuffer_ColumnTypeSliceTracksWidth(t *testing.T) {
 // and every accessor bounds-checks.
 func TestBuffer_HandlesRaggedRows(t *testing.T) {
 	b := createNewBuffer()
-	if err := loadFileInto("./data/test/inconsistent_columns.csv", b); err != nil {
+	if err := loadFileInto("../../data/test/inconsistent_columns.csv", b); err != nil {
 		t.Skipf("fixture unavailable: %v", err)
 	}
 	b.detectAllColumnTypes()

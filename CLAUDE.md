@@ -11,6 +11,7 @@ pixi run go build -o ftv .          # build
 pixi run go test ./...              # all tests (~0.3s, 120 test funcs)
 pixi run go test -race ./...        # what `make test` runs
 pixi run go test -run TestIntake_PreservesRowOrder -v ./...   # single test
+pixi run go build -o ftv ./cmd/ftv   # the command is not at the module root
 pixi run go vet ./...
 pixi run gofmt -l .                 # must print nothing
 ```
@@ -21,11 +22,11 @@ CI tests Go 1.24 and 1.25, matching the `go 1.24.0` that `go.mod` declares. The 
 
 `golangci-lint` is pinned in `.github/workflows/linter.yml` rather than tracking `latest`: the action's own "latest" resolved to 1.64.8, which cannot read a Go 1.24+ standard library's export data and failed every run with `export data version 4 is greater than maximum supported version 2`, reporting every stdlib import as unresolved. Run it locally with the same version before blaming the code. Coverage upload steps are `continue-on-error`, so a third-party outage cannot fail the build.
 
-Test fixtures live in `data/test/` (CSV, TSV, gzip, pipe-delimited, quoted, ragged, empty, header-only). Prefer adding a fixture there over constructing files in test code.
+Test fixtures live in `data/test/` at the repository root (reached from tests as `../../data/test/`) (CSV, TSV, gzip, pipe-delimited, quoted, ragged, empty, header-only). Prefer adding a fixture there over constructing files in test code.
 
 ## Architecture
 
-Single flat `package main`, ~3.9k lines across 13 non-test files, no subpackages. Work flows through five modules, each with a small interface and the complexity behind it.
+One `package main` in `cmd/ftv/`, ~3.9k lines across 13 non-test files, no subpackages. The command lives in a subdirectory for one reason: `go install` names a binary after its directory, so this is what makes `go install …/cmd/ftv@latest` produce `ftv` rather than `FastTableViewer`. Work flows through five modules, each with a small interface and the complexity behind it.
 
 ```
 ftv.go ──► Intake ──► Buffer ◄── ViewState ◄── ui.go
@@ -108,6 +109,7 @@ While loading, `refreshWhileLoading` repaints only the footer, on a 20 ms ticker
 
 Table-driven subtests throughout, plus `regression_test.go`, which holds one test per defect fixed during the module work, grouped by the module it belongs to. When fixing a bug here, add its case there.
 
+- Fixtures are reached as `../../data/test/…`, because tests run with the working directory set to `cmd/ftv/` while `data/test/` stays at the repository root.
 - `createNewBufferWithData` returns an independent buffer. It used to assign the package-level one, so fixtures clobbered each other.
 - `ftv_test.go` invokes `main()` for real. It passes because stdin is a character device under `go test` (terminal or `/dev/null`), so it hits the no-args help branch. Piping into `go test` sends it down the pipe loader instead. The `debug` global that guards `app.Run()` and `fatalError`'s `os.Exit(1)` is declared but never set true, so `fatalError` will terminate the test binary.
 - The TUI itself has no test coverage. To check it by hand, drive the built binary through a pty (`python3 -c` with the `pty` module), set a window size, then send keys — `go test` cannot reach `drawUI`.
@@ -133,15 +135,16 @@ Go fights this: the main package sits at the module root, so `go build` and `go 
 
 | Path | How `ftv` is enforced |
 | --- | --- |
-| `make build` | `go build -o ftv` (`BINARY_NAME` in the Makefile) |
-| release archives, deb, rpm, AUR | `builds[].binary: ftv` in `.goreleaser.yml` |
-| snap | `organize: {bin/FastTableViewer: bin/ftv}` — the snapcraft `go` plugin runs `go install ./...` and cannot be told a name |
-| Homebrew | `bin.install` in `codechenx/homebrew-tap`, renaming whatever the archive holds |
+| `go install`, `go build` | the command directory is named `ftv` — this is why it is not at the module root |
+| `make build` | `go build -o ftv ./cmd/ftv` |
+| release archives, deb, rpm, AUR | `builds[].binary: ftv` and `main: ./cmd/ftv` in `.goreleaser.yml` |
+| snap | nothing — the snapcraft `go` plugin's `go install ./...` names it after the directory |
+| Homebrew | `bin.install "ftv"` in `codechenx/homebrew-tap` |
 
-Two consequences worth remembering:
+Two things to remember:
 
-- **`go install github.com/codechenx/FastTableViewer@latest` still produces `FastTableViewer`.** That is inherent to a root main package and the only place the rule does not hold; the fix would be moving the command into `cmd/ftv/`, which trades the flat single-package layout for it. Issue #27 documents the symlink workaround.
-- **Release archives built before `binary: ftv` hold `FastTableViewer`.** v0.9.0 is one of them, so the Homebrew formula still renames it. At the next release, simplify that line to `bin.install "ftv"` — and check it, because getting it wrong breaks `brew install` silently until someone reports it, as #24 shows.
+- **The install command carries the command path:** `go install github.com/codechenx/FastTableViewer/cmd/ftv@latest`. The bare module path has no main package and will not install.
+- **Release archives built before v0.9.1 hold `FastTableViewer`.** The Homebrew formula therefore has to match the release it points at; getting that wrong breaks `brew install` silently until someone reports it, as #24 shows.
 
 `make version` rewrites the version across `ftv.go`, `README.md`, `snap/snapcraft.yaml` and `PKGBUILD` — the only sanctioned way to bump, since the version is hardcoded in `main`'s cobra command.
 

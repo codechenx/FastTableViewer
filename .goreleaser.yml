@@ -9,6 +9,7 @@ builds:
   # The command is ftv everywhere. Without this goreleaser names the binary
   # after the project, and each package has to rename it on the way in.
   - binary: ftv
+    main: ./cmd/ftv
     env:
       - CGO_ENABLED=0
     goos:

@@ -20,12 +20,6 @@ parts:
     build-snaps: [go/latest/stable]
     source: https://github.com/codechenx/FastTableViewer.git
     source-type: git
-    # The go plugin runs `go install ./...`, which names the binary after the
-    # last element of the module path — so this produces FastTableViewer, not
-    # ftv, and the command below would not exist. Rename it here so the snap
-    # ships `ftv`, as the deb, rpm, AUR and Homebrew packages all do.
-    organize:
-      bin/FastTableViewer: bin/ftv
 
 apps:
   codechenx-tv:
