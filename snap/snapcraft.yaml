@@ -1,6 +1,6 @@
 name: codechenx-tv
  
-version: '0.9.0'
+version: '0.9.1'
 title: Fast Table Viewer
 summary: Fast table viewer for delimited file in terminal.
 description: |

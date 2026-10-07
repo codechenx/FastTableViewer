@@ -3,7 +3,7 @@ authors = ["codechenx <codechenx@gmail.com>"]
 channels = ["conda-forge"]
 name = "FastTableViewer"
 platforms = ["osx-arm64"]
-version = "0.9.0"
+version = "0.9.1"
 
 [tasks]
 
