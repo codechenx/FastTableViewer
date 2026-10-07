@@ -123,7 +123,9 @@ Deliberately left alone; don't treat them as accidents:
 
 ## Release
 
-goreleaser (`.goreleaser.yml`) on tag push, targeting Homebrew, AUR, snap and PKGBUILD. `make version` rewrites the version across `ftv.go`, `README.md`, `snap/snapcraft.yaml` and `PKGBUILD` — the only sanctioned way to bump, since the version is hardcoded in `main`'s cobra command.
+goreleaser (`.goreleaser.yml`) on tag push, targeting AUR, deb/rpm and PKGBUILD. Homebrew is **not** automated — `codechenx/homebrew-tap` is edited by hand, which is how its digest once drifted out of sync with the published asset (issue #24). The snap is built by snapcraft.io from this repo's `main`, not by goreleaser.
+
+**Renaming the module breaks packaging.** Every package installs the binary as `ftv`, but `go install` names it after the last element of the module path, so it produces `FastTableViewer`. `snap/snapcraft.yaml` bridges that with an `organize:` mapping, and the Makefile and goreleaser pass an explicit output name. Change `module` in `go.mod` and all three need revisiting. `make version` rewrites the version across `ftv.go`, `README.md`, `snap/snapcraft.yaml` and `PKGBUILD` — the only sanctioned way to bump, since the version is hardcoded in `main`'s cobra command.
 
 ## Agent skills
 

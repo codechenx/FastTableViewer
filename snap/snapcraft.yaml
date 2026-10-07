@@ -1,9 +1,15 @@
 name: codechenx-tv
  
 version: '0.9.0'
+title: Fast Table Viewer
 summary: Fast table viewer for delimited file in terminal.
 description: |
     A fast, feature-rich CSV/TSV/delimited file viewer for the command line.
+license: Apache-2.0
+contact: codechenx@gmail.com
+issues: https://github.com/codechenx/FastTableViewer/issues
+source-code: https://github.com/codechenx/FastTableViewer
+website: https://github.com/codechenx/FastTableViewer
 base: core24
 grade: stable # must be 'stable' to release into candidate/stable channels
 confinement: strict # use 'strict' once you have the right plugs and slots
@@ -14,6 +20,12 @@ parts:
     build-snaps: [go/latest/stable]
     source: https://github.com/codechenx/FastTableViewer.git
     source-type: git
+    # The go plugin runs `go install ./...`, which names the binary after the
+    # last element of the module path — so this produces FastTableViewer, not
+    # ftv, and the command below would not exist. Rename it here so the snap
+    # ships `ftv`, as the deb, rpm, AUR and Homebrew packages all do.
+    organize:
+      bin/FastTableViewer: bin/ftv
 
 apps:
   codechenx-tv:
