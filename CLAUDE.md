@@ -125,7 +125,25 @@ Deliberately left alone; don't treat them as accidents:
 
 goreleaser (`.goreleaser.yml`) on tag push, targeting AUR, deb/rpm and PKGBUILD. Homebrew is **not** automated — `codechenx/homebrew-tap` is edited by hand, which is how its digest once drifted out of sync with the published asset (issue #24). The snap is built by snapcraft.io from this repo's `main`, not by goreleaser.
 
-**Renaming the module breaks packaging.** Every package installs the binary as `ftv`, but `go install` names it after the last element of the module path, so it produces `FastTableViewer`. `snap/snapcraft.yaml` bridges that with an `organize:` mapping, and the Makefile and goreleaser pass an explicit output name. Change `module` in `go.mod` and all three need revisiting. `make version` rewrites the version across `ftv.go`, `README.md`, `snap/snapcraft.yaml` and `PKGBUILD` — the only sanctioned way to bump, since the version is hardcoded in `main`'s cobra command.
+### The command is `ftv`
+
+**The installed binary is always named `ftv`, never `FastTableViewer`.** The project is called FastTableViewer; the command is `ftv`. Nothing a user runs, and nothing inside a release artifact, should carry the project name.
+
+Go fights this: the main package sits at the module root, so `go build` and `go install` name the binary after the last element of the module path. Each packaging path therefore states the name explicitly, and all of them must keep agreeing:
+
+| Path | How `ftv` is enforced |
+| --- | --- |
+| `make build` | `go build -o ftv` (`BINARY_NAME` in the Makefile) |
+| release archives, deb, rpm, AUR | `builds[].binary: ftv` in `.goreleaser.yml` |
+| snap | `organize: {bin/FastTableViewer: bin/ftv}` — the snapcraft `go` plugin runs `go install ./...` and cannot be told a name |
+| Homebrew | `bin.install` in `codechenx/homebrew-tap`, renaming whatever the archive holds |
+
+Two consequences worth remembering:
+
+- **`go install github.com/codechenx/FastTableViewer@latest` still produces `FastTableViewer`.** That is inherent to a root main package and the only place the rule does not hold; the fix would be moving the command into `cmd/ftv/`, which trades the flat single-package layout for it. Issue #27 documents the symlink workaround.
+- **Release archives built before `binary: ftv` hold `FastTableViewer`.** v0.9.0 is one of them, so the Homebrew formula still renames it. At the next release, simplify that line to `bin.install "ftv"` — and check it, because getting it wrong breaks `brew install` silently until someone reports it, as #24 shows.
+
+`make version` rewrites the version across `ftv.go`, `README.md`, `snap/snapcraft.yaml` and `PKGBUILD` — the only sanctioned way to bump, since the version is hardcoded in `main`'s cobra command.
 
 ## Agent skills
 

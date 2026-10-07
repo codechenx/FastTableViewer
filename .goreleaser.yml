@@ -6,7 +6,10 @@ before:
     - go mod tidy
 
 builds:
-  - env:
+  # The command is ftv everywhere. Without this goreleaser names the binary
+  # after the project, and each package has to rename it on the way in.
+  - binary: ftv
+    env:
       - CGO_ENABLED=0
     goos:
       - linux
@@ -81,6 +84,6 @@ aurs:
     private_key: '{{ .Env.AUR_KEY }}'
     git_url: 'ssh://aur@aur.archlinux.org/ftv-bin.git'
     package: |-
-      install -Dm755 "./FastTableViewer" "${pkgdir}/usr/bin/ftv"
+      install -Dm755 "./ftv" "${pkgdir}/usr/bin/ftv"
       install -Dm644 "./LICENSE" "${pkgdir}/usr/share/licenses/ftv-bin/LICENSE"
       install -Dm644 "./README.md" "${pkgdir}/usr/share/doc/ftv-bin/README.md"
