@@ -2,7 +2,6 @@
 
 **A fast, feature-rich CSV/TSV/delimited file viewer for the command line**
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/codechenx/FastTableViewer)](https://goreportcard.com/report/github.com/codechenx/FastTableViewer)
 ![test](https://github.com/codechenx/FastTableViewer/workflows/test/badge.svg)
 [![Coverage Status](https://coveralls.io/repos/github/codechenx/FastTableViewer/badge.svg?branch=main)](https://coveralls.io/github/codechenx/FastTableViewer?branch=main)
 [![GitHub license](https://img.shields.io/github/license/codechenx/FastTableViewer.svg)](https://github.com/codechenx/FastTableViewer/blob/master/LICENSE)
