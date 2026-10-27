@@ -90,13 +90,16 @@ func (v *ViewState) DataRows() int {
 
 // ColumnName returns the header text for a column, falling back to its index.
 func (v *ViewState) ColumnName(col int) string {
+	if col < 0 {
+		return ""
+	}
 	v.visible.mu.RLock()
 	defer v.visible.mu.RUnlock()
 
 	if v.visible.rowFreeze > 0 && len(v.visible.cont) > 0 && col < len(v.visible.cont[0]) {
 		return v.visible.cont[0][col]
 	}
-	return "Column " + I2S(col)
+	return "Column " + I2S(col+1)
 }
 
 // ApplyFilter adds or replaces the filter on one column. It reports the data

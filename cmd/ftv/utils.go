@@ -135,12 +135,18 @@ func getHelpContent() string {
   [yellow]s[-]                   Sort data by column (ascending ⬆️)
   [yellow]S[-]                   Sort data by column (descending ⬇️)
 
-[::b][cyan]📏 Text Wrapping[white]
+[::b][cyan]📏 Column width[white]
   [yellow]W[-]                   Toggle width limit for current column (50 chars)
-                    Long columns (>50 chars) are limited automatically
+                    The table truncates long values. Enter reads them in full.
 
 [::b][blue]📊 Stats[white]
   [yellow]i[-]                   Show stats info for current column
+
+[::b][cyan]Row viewer[white]
+  [yellow]Enter[-]               Read complete values with word wrapping
+  [yellow]j/k, arrows, PgUp/PgDn[-] Scroll the record
+  [yellow]n/p[-]                 Read the next or previous record
+  [yellow]Esc or q[-]            Return to the table
 
 [::b][yellow]❓ Help[white]
   [yellow]?[-]                   Show this help dialog
