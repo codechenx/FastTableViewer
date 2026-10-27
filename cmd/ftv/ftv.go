@@ -26,10 +26,11 @@ func main() {
 	initView()
 	args.setDefault()
 	RootCmd := &cobra.Command{
-		Use:     "ftv {File_Name}",
-		Version: "0.9.2",
-		Short:   "Fast table viewer for delimited file in terminal",
-		Run:     runViewer,
+		SilenceErrors: true,
+		Use:           "ftv {File_Name}",
+		Version:       "0.9.2",
+		Short:         "Fast table viewer for delimited file in terminal",
+		Run:           runViewer,
 	}
 
 	RootCmd.Flags().StringVarP(&args.Sep, "separator", "s", "", "Delimiter/separator character (use \\t for tab)")
@@ -59,9 +60,9 @@ func runViewer(cmd *cobra.Command, cmdargs []string) {
 	if err != nil {
 		stopView()
 		if errors.Is(err, os.ErrNotExist) {
-			fmt.Printf("⚠️  File not found: %s\n", cmdargs[0])
+			fmt.Printf("⚠️  File not found: %q\n", cmdargs[0])
 		} else {
-			fmt.Printf("⚠️  Cannot access input: %s\n", err)
+			fmt.Printf("⚠️  Cannot access input: %q\n", err.Error())
 		}
 		os.Exit(1)
 	}

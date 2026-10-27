@@ -105,12 +105,14 @@ func (b *Buffer) appendRowUnsafe(s []string, strict bool) error {
 		return errors.New("Row " + I2S(b.rowLen+b.rowFreeze) + " lacks some columns")
 	}
 
-	b.cont = append(b.cont, s)
-
-	// Adjust column count if needed
-	if b.colLen != len(s) {
+	if len(s) > b.colLen {
 		b.resizeColUnsafe(len(s))
 	}
+	s = s[:len(s):len(s)]
+	for len(s) < b.colLen {
+		s = append(s, "NaN")
+	}
+	b.cont = append(b.cont, s)
 	b.rowLen++
 
 	return nil
@@ -119,19 +121,15 @@ func (b *Buffer) appendRowUnsafe(s []string, strict bool) error {
 // resizeColUnsafe adjusts the number of columns (must be called with lock held)
 // Fills missing columns with "NaN"
 func (b *Buffer) resizeColUnsafe(n int) {
-	if n <= 0 {
+	if n <= b.colLen {
 		return
 	}
-
-	lackLen := b.colLen - n
-	if lackLen < 0 {
-		lackLen = n - b.colLen
-		b.colLen = n
-	}
+	b.colLen = n
 
 	// Fill missing columns with NaN
 	for ii := range b.cont {
-		for m := 0; m < lackLen; m++ {
+		b.cont[ii] = b.cont[ii][:len(b.cont[ii]):len(b.cont[ii])]
+		for len(b.cont[ii]) < n {
 			b.cont[ii] = append(b.cont[ii], "NaN")
 		}
 	}

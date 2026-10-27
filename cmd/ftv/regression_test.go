@@ -1,14 +1,19 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 )
 
 // ============================================================
@@ -796,5 +801,185 @@ func TestIssue25_ConsistencyBeatsPreference(t *testing.T) {
 	}
 	if got := sd.sepDetect(lines); got != ';' {
 		t.Errorf("sepDetect() = %q, want ';' — the comma appears only in some lines", got)
+	}
+}
+
+func TestIntake_RaggedRowsStayRectangular(t *testing.T) {
+	input := "a,b\n" + strings.Repeat("x\n", 100) + "y,z,w\n"
+	b := createNewBuffer()
+	if err := (Intake{
+		Source: pipeSource(strings.NewReader(input)),
+		Config: IntakeConfig{Sep: ','},
+	}).Into(b); err != nil {
+		t.Fatal(err)
+	}
+
+	if b.rowLen != 102 || b.colLen != 3 {
+		t.Fatalf("dimensions = %dx%d, want 102x3", b.rowLen, b.colLen)
+	}
+	for i, row := range b.cont {
+		want := []string{"x", "NaN", "NaN"}
+		switch i {
+		case 0:
+			want = []string{"a", "b", "NaN"}
+		case 101:
+			want = []string{"y", "z", "w"}
+		}
+		if !reflect.DeepEqual(row, want) {
+			t.Fatalf("row %d = %v, want %v", i, row, want)
+		}
+	}
+}
+
+func TestBuffer_PaddingDoesNotOverwriteSharedRows(t *testing.T) {
+	b := createNewBuffer()
+	if err := b.contAppendSli([]string{"a", "b"}, false); err != nil {
+		t.Fatal(err)
+	}
+	shared := []string{"x", "y", "z"}
+	if err := b.contAppendSli(shared[:1], false); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.contAppendSli(shared[1:], false); err != nil {
+		t.Fatal(err)
+	}
+	b.resizeCol(3)
+	b.resizeCol(1)
+
+	want := [][]string{{"a", "b", "NaN"}, {"x", "NaN", "NaN"}, {"y", "z", "NaN"}}
+	if !reflect.DeepEqual(b.cont, want) {
+		t.Fatalf("rows = %v, want %v", b.cont, want)
+	}
+	if !reflect.DeepEqual(shared, []string{"x", "y", "z"}) {
+		t.Fatalf("shared source overwritten: %v", shared)
+	}
+	if b.colLen != 3 {
+		t.Fatalf("column count = %d, want 3 after smaller resize", b.colLen)
+	}
+}
+
+func TestBuffer_StrictRaggedRowsLeaveBufferUnchanged(t *testing.T) {
+	b := createNewBuffer()
+	if err := b.contAppendSli([]string{"a", "b"}, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range [][]string{{"x"}, {"x", "y", "z"}, {}} {
+		if err := b.contAppendSli(row, true); err == nil {
+			t.Fatalf("strict append accepted %v", row)
+		}
+		if b.rowLen != 1 || b.colLen != 2 || !reflect.DeepEqual(b.cont, [][]string{{"a", "b"}}) {
+			t.Fatalf("strict rejection changed buffer: dimensions %dx%d rows %v", b.rowLen, b.colLen, b.cont)
+		}
+	}
+}
+
+func TestFileDataCannotSetTerminalHyperlinks(t *testing.T) {
+	for _, payload := range []string{
+		"[:::\a\x1b[2J]X",
+		"[:::https://example.com/[a]]X",
+		"[:::bad\u009c\u009b2J]X",
+	} {
+		for _, boundary := range []string{"cells", "footer", "stats"} {
+			t.Run(boundary+"/"+payload, func(t *testing.T) {
+				initView()
+				args.setDefault()
+				input := payload + ",value\n" + payload + ",ok\n"
+				b := view.Original()
+				if err := (Intake{Source: pipeSource(strings.NewReader(input)), Config: IntakeConfig{Sep: ','}}).Into(b); err != nil {
+					t.Fatal(err)
+				}
+				if err := drawUI(); err != nil {
+					t.Fatal(err)
+				}
+				var primitive tview.Primitive = bufferTable
+				switch boundary {
+				case "footer":
+					view.ApplyFilter(0, FilterOptions{Query: payload, Operator: opContains})
+					drawFooter(payload, payload, payload)
+					primitive = mainPage
+				case "stats":
+					s := &DiscreteStats{}
+					s.summary([]string{payload})
+					showStatsDialog(s, payload, colTypeStr)
+					primitive = UI
+				}
+				screen := tcell.NewSimulationScreen("UTF-8")
+				if err := screen.Init(); err != nil {
+					t.Fatal(err)
+				}
+				defer screen.Fini()
+				screen.SetSize(240, 60)
+				primitive.SetRect(0, 0, 240, 60)
+				primitive.Draw(screen)
+				for y := 0; y < 60; y++ {
+					for x := 0; x < 240; x++ {
+						_, _, style, _ := screen.GetContent(x, y)
+						if style != style.Url("") {
+							t.Fatalf("file data set hyperlink style %#v at %d,%d", style, x, y)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestFatalErrorQuotesTerminalControls(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = reader.Close()
+		_ = writer.Close()
+	}()
+	oldStdout, oldDebug := os.Stdout, debug
+	os.Stdout, debug = writer, true
+	defer func() { os.Stdout, debug = oldStdout, oldDebug }()
+	const message = "bad input\a\x1b[2J\u009b"
+	fatalError(errors.New(message))
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), strconv.Quote(message)) {
+		t.Fatalf("diagnostic did not quote control bytes: %q", output)
+	}
+}
+
+func TestTableShowsMarkupAsLiteralData(t *testing.T) {
+	for _, text := range []string{"[red]X", "[[red]X", "[a[]X", "[", "[:::https://example.com/[a]]X", "[é]"} {
+		t.Run(text, func(t *testing.T) {
+			initView()
+			args.setDefault()
+			b, err := createNewBufferWithData([][]string{{"header"}, {text}}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			view = NewViewState(b)
+			view.MeasureColumns()
+			screen := tcell.NewSimulationScreen("UTF-8")
+			if err := screen.Init(); err != nil {
+				t.Fatal(err)
+			}
+			defer screen.Fini()
+			screen.SetSize(100, 1)
+			cell := (bufferContent{}).GetCell(1, 0)
+			tview.Print(screen, cell.Text, 0, 0, 100, tview.AlignLeft, tcell.ColorWhite)
+			var rendered strings.Builder
+			for x := 0; x < 100; x++ {
+				r, combining, _, _ := screen.GetContent(x, 0)
+				if r != 0 {
+					rendered.WriteRune(r)
+					rendered.WriteString(string(combining))
+				}
+			}
+			if got := strings.TrimSpace(rendered.String()); got != text {
+				t.Fatalf("rendered %q, want literal %q", got, text)
+			}
+		})
 	}
 }
