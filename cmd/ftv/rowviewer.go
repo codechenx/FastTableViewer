@@ -25,7 +25,7 @@ func rowViewerText(text string) string {
 
 func showRowViewer(row, column int) {
 	first, _ := view.Freeze()
-	if bufferTable.GetRowCount() <= first {
+	if bufferTable.GetRowCount() <= first || bufferTable.GetColumnCount() == 0 {
 		return
 	}
 	if row < first {
