@@ -30,6 +30,11 @@ type ViewState struct {
 	layouts []columnLayout
 
 	cursorCol int
+
+	hiddenColumns  map[int]bool
+	initialColumns []int
+	columns        []int
+	knownColumns   int
 }
 
 // columnLayout is how the table paints one column: how wide it naturally wants
@@ -53,13 +58,14 @@ const (
 // NewViewState returns a view over b with nothing filtered and nothing found.
 func NewViewState(b *Buffer) *ViewState {
 	return &ViewState{
-		original:  b,
-		visible:   b,
-		filters:   map[int]FilterOptions{},
-		results:   []SearchResult{},
-		resultSet: map[[2]int]bool{},
-		resultAt:  -1,
-		wrapped:   map[int]int{},
+		original:      b,
+		visible:       b,
+		filters:       map[int]FilterOptions{},
+		results:       []SearchResult{},
+		resultSet:     map[[2]int]bool{},
+		resultAt:      -1,
+		wrapped:       map[int]int{},
+		hiddenColumns: map[int]bool{},
 	}
 }
 
@@ -93,10 +99,10 @@ func (v *ViewState) ColumnName(col int) string {
 	v.visible.mu.RLock()
 	defer v.visible.mu.RUnlock()
 
-	if v.visible.rowFreeze > 0 && len(v.visible.cont) > 0 && col < len(v.visible.cont[0]) {
+	if v.visible.rowFreeze > 0 && len(v.visible.cont) > 0 && col >= 0 && col < len(v.visible.cont[0]) {
 		return v.visible.cont[0][col]
 	}
-	return "Column " + I2S(col)
+	return "Column " + I2S(col+1)
 }
 
 // ApplyFilter adds or replaces the filter on one column. It reports the data
@@ -183,7 +189,13 @@ func (v *ViewState) Search(spec MatchSpec) int {
 
 // runSearch recomputes the match set against the visible buffer.
 func (v *ViewState) runSearch() {
-	v.results = performSearch(v.visible, v.search)
+	v.results = v.results[:0]
+	v.VisibleColumns()
+	for _, result := range performSearch(v.visible, v.search) {
+		if !v.hiddenColumns[result.Col] {
+			v.results = append(v.results, result)
+		}
+	}
 	v.resultSet = make(map[[2]int]bool, len(v.results))
 	for _, r := range v.results {
 		v.resultSet[[2]int{r.Row, r.Col}] = true

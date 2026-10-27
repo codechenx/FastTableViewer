@@ -80,19 +80,24 @@ func buildFileInfoStr() string {
 	rows, cols := view.Dims()
 	rowFreeze, _ := view.Freeze()
 
-	return fmt.Sprintf("%s  %s×%d  ·  ? help",
-		filepath.Base(args.FileName), formatCount(rows-rowFreeze), cols)
+	return fmt.Sprintf("%s  %s×%d  ·  %d hidden  ·  c columns  ·  ? help",
+		filepath.Base(args.FileName), formatCount(rows-rowFreeze), len(view.VisibleColumns()), cols-len(view.VisibleColumns()))
 }
 
 // visibleRows and visibleCols are the bounds navigation clamps against.
 func visibleRows() int { rows, _ := view.Dims(); return rows }
-func visibleCols() int { _, cols := view.Dims(); return cols }
+func visibleCols() int { return len(view.VisibleColumns()) }
 
 // buildCursorPosStr names where the cursor is and what it is sitting in. The
 // old readout was "Column Type: Str  |  0,0": a bare pair of indices with no
 // totals to measure them against, and no name for the column they referred to.
 func buildCursorPosStr(row, column int) string {
-	rows, cols := view.Dims()
+	rows, _ := view.Dims()
+	cols := visibleCols()
+	source := view.SourceColumn(column)
+	if source < 0 {
+		return "Waiting for selected columns"
+	}
 	rowFreeze, _ := view.Freeze()
 
 	// Report the position within the data, counting from one.
@@ -104,7 +109,7 @@ func buildCursorPosStr(row, column int) string {
 		where = fmt.Sprintf("header  c%d/%d", column+1, cols)
 	}
 
-	return fmt.Sprintf("%s · %s   %s  ", view.ColumnName(column), type2name(view.ColType(column)), where)
+	return fmt.Sprintf("%s · %s   %s  ", view.ColumnName(source), type2name(view.ColType(source)), where)
 }
 
 // buildFilterInfoStr builds the filter information string for the top strip
@@ -156,6 +161,10 @@ func drawStats(s statsSummary, t *tview.Table) {
 
 // draw app UI
 func drawUI() error {
+	if err := view.ConfigureColumns(args.ShowNum, args.HideNum); err != nil {
+		return err
+	}
+	view.SetCursorColumn(view.SourceColumn(0))
 
 	//bufferTable init with modern styling
 	bufferTable = tview.NewTable()
@@ -199,7 +208,7 @@ func drawUI() error {
 		}
 
 		// Update current cursor column
-		view.SetCursorColumn(column)
+		view.SetCursorColumn(view.SourceColumn(column))
 
 		cursorPosStr = buildCursorPosStr(row, column)
 
@@ -217,6 +226,15 @@ func drawUI() error {
 			(event.Key() == tcell.KeyRune && (event.Rune() == 'h' || event.Rune() == 'j' ||
 				event.Rune() == 'k' || event.Rune() == 'l')) {
 			userMovedCursor = true
+		}
+
+		if event.Key() == tcell.KeyRune && event.Rune() == 'c' {
+			showColumnPicker()
+			return nil
+		}
+		if event.Key() == tcell.KeyRune && event.Rune() == 'x' {
+			hideSelectedColumn()
+			return nil
 		}
 
 		// Vim-like navigation
@@ -353,7 +371,7 @@ func drawUI() error {
 
 					if found > 0 {
 						if match, ok := view.CurrentMatch(); ok {
-							bufferTable.Select(match.Row, match.Col)
+							bufferTable.Select(match.Row, view.DisplayColumn(match.Col))
 						}
 						searchMode := "matches"
 						if useRegex {
@@ -436,7 +454,7 @@ func drawUI() error {
 		// Navigate to next search result
 		if event.Key() == tcell.KeyRune && event.Rune() == 'n' {
 			if match, ok := view.NextMatch(); ok {
-				bufferTable.Select(match.Row, match.Col)
+				bufferTable.Select(match.Row, view.DisplayColumn(match.Col))
 				drawFooter(fileNameStr,
 					fmt.Sprintf("Match %d/%d", view.MatchIndex(), view.MatchCount()),
 					cursorPosStr)
@@ -449,7 +467,7 @@ func drawUI() error {
 		// Navigate to previous search result
 		if event.Key() == tcell.KeyRune && event.Rune() == 'N' {
 			if match, ok := view.PrevMatch(); ok {
-				bufferTable.Select(match.Row, match.Col)
+				bufferTable.Select(match.Row, view.DisplayColumn(match.Col))
 				drawFooter(fileNameStr,
 					fmt.Sprintf("Match %d/%d", view.MatchIndex(), view.MatchCount()),
 					cursorPosStr)
@@ -470,7 +488,8 @@ func drawUI() error {
 
 		// f - column filter functionality
 		if event.Key() == tcell.KeyRune && event.Rune() == 'f' {
-			_, column := bufferTable.GetSelection()
+			_, displayColumn := bufferTable.GetSelection()
+			column := view.SourceColumn(displayColumn)
 
 			// Create filter form
 			filterForm := tview.NewForm()
@@ -518,7 +537,7 @@ func drawUI() error {
 						CaseSensitive: caseSensitive,
 					})
 					if kept {
-						bufferTable.Select(0, column) // Stay at same column, go to first row
+						bufferTable.Select(0, displayColumn) // Stay at same column, go to first row
 						drawFooter(fileNameStr,
 							fmt.Sprintf("Filtered: %d rows match (%d filters active, r to reset)", rows, view.FilterCount()),
 							cursorPosStr)
@@ -527,7 +546,7 @@ func drawUI() error {
 					}
 				} else if view.ClearFilter(column) {
 					// An empty query removes this column's filter.
-					bufferTable.Select(0, column) // Stay at same column
+					bufferTable.Select(0, displayColumn) // Stay at same column
 					if view.Filtered() {
 						drawFooter(fileNameStr,
 							fmt.Sprintf("Filter removed: %d rows match (%d filters active)", view.DataRows(), view.FilterCount()),
@@ -548,9 +567,9 @@ func drawUI() error {
 			filterForm.SetButtonsAlign(tview.AlignCenter)
 			filterForm.SetBorder(true)
 
-			filterTitle := fmt.Sprintf(" 🔎 Filter Column %d - Enter to filter, Esc to cancel ", column)
+			filterTitle := fmt.Sprintf(" 🔎 Filter Column %d - Enter to filter, Esc to cancel ", column+1)
 			if _, exists := view.FilterAt(column); exists {
-				filterTitle = fmt.Sprintf(" 🔎 Edit Filter for Column %d (empty value to remove) - Enter to apply, Esc to cancel ", column)
+				filterTitle = fmt.Sprintf(" 🔎 Edit Filter for Column %d (empty value to remove) - Enter to apply, Esc to cancel ", column+1)
 			}
 			filterForm.SetTitle(filterTitle)
 			filterForm.SetTitleAlign(tview.AlignCenter)
@@ -620,7 +639,7 @@ func drawUI() error {
 			if view.Filtered() {
 				row, column := bufferTable.GetSelection()
 
-				if view.ClearFilter(column) {
+				if view.ClearFilter(view.SourceColumn(column)) {
 					bufferTable.Select(row, column)
 					if view.Filtered() {
 						drawFooter(fileNameStr,
@@ -641,7 +660,7 @@ func drawUI() error {
 			_, column := bufferTable.GetSelection()
 			drawFooter(fileNameStr, "Sorting...", cursorPosStr)
 			app.ForceDraw()
-			view.SortBy(column, false)
+			view.SortBy(view.SourceColumn(column), false)
 			drawFooter(fileNameStr, "All Done", cursorPosStr)
 		}
 
@@ -650,13 +669,14 @@ func drawUI() error {
 			_, column := bufferTable.GetSelection()
 			drawFooter(fileNameStr, "Sorting...", cursorPosStr)
 			app.ForceDraw()
-			view.SortBy(column, true)
+			view.SortBy(view.SourceColumn(column), true)
 			drawFooter(fileNameStr, "All Done", cursorPosStr)
 		}
 
 		// i - show stats info for current column
 		if event.Key() == tcell.KeyRune && event.Rune() == 'i' {
-			_, column := bufferTable.GetSelection()
+			_, displayColumn := bufferTable.GetSelection()
+			column := view.SourceColumn(displayColumn)
 			drawFooter(fileNameStr, "Calculating statistics...", cursorPosStr)
 			app.ForceDraw()
 
@@ -692,7 +712,7 @@ func drawUI() error {
 			row, column := bufferTable.GetSelection()
 
 			// Cycle through types: Str -> Num -> Date -> Str
-			view.CycleColType(column)
+			view.CycleColType(view.SourceColumn(column))
 			cursorPosStr = buildCursorPosStr(row, column)
 			drawFooter(fileNameStr, statusMessage, cursorPosStr)
 		}
@@ -701,7 +721,7 @@ func drawUI() error {
 		if event.Key() == tcell.KeyRune && event.Rune() == 'W' {
 			_, column := bufferTable.GetSelection()
 
-			if width, limited := view.ToggleWrap(column); limited {
+			if width, limited := view.ToggleWrap(view.SourceColumn(column)); limited {
 				drawFooter(fileNameStr, fmt.Sprintf("Column width limited to %d chars", width), cursorPosStr)
 			} else {
 				drawFooter(fileNameStr, "Column width limit removed", cursorPosStr)

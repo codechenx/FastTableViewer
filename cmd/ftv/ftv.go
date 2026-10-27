@@ -37,8 +37,8 @@ func main() {
 	RootCmd.Flags().IntVarP(&args.NLine, "lines", "n", 0, "Display only first N lines")
 	RootCmd.Flags().StringSliceVar(&args.SkipSymbol, "skip-prefix", []string{}, "Skip lines starting with prefix (comma-separated)")
 	RootCmd.Flags().IntVar(&args.SkipNum, "skip-lines", 0, "Skip first N lines")
-	RootCmd.Flags().IntSliceVar(&args.ShowNum, "columns", []int{}, "Show only specified columns (comma-separated)")
-	RootCmd.Flags().IntSliceVar(&args.HideNum, "hide-columns", []int{}, "Hide specified columns (comma-separated)")
+	RootCmd.Flags().IntSliceVar(&args.ShowNum, "columns", []int{}, "Initially show only specified columns (comma-separated)")
+	RootCmd.Flags().IntSliceVar(&args.HideNum, "hide-columns", []int{}, "Initially hide specified columns (comma-separated)")
 	RootCmd.Flags().IntVarP(&args.Header, "freeze", "f", 0, "Freeze mode: -1=none, 0=row+col, 1=row only, 2=col only")
 	RootCmd.Flags().BoolVar(&args.Strict, "strict", false, "Strict mode: fail on missing/inconsistent data")
 	RootCmd.Flags().BoolVar(&args.AsyncLoad, "async", true, "Progressive rendering while loading")
@@ -51,6 +51,7 @@ func main() {
 // them, then show them. Whether loading is progressive is a choice about when
 // to draw, not a second way to load.
 func runViewer(cmd *cobra.Command, cmdargs []string) {
+	fatalError(checkColumnSelection(args.ShowNum, args.HideNum))
 	src, piped, err := resolveSource(cmdargs)
 	if errors.Is(err, errNoInput) {
 		stopView()
@@ -137,6 +138,7 @@ func loadAndShow(intake Intake, buf *Buffer, piped bool) {
 	loadProgress.Finish()
 	console.finish()
 	fatalError(err)
+	fatalError(validateLoadedColumns(buf))
 
 	if exitIfEmpty(buf, piped) {
 		return
@@ -167,6 +169,7 @@ func loadProgressively(intake Intake, buf *Buffer, piped bool) {
 	case err := <-done:
 		loadProgress.Finish()
 		fatalError(err)
+		fatalError(validateLoadedColumns(buf))
 		if exitIfEmpty(buf, piped) {
 			return
 		}
@@ -200,6 +203,10 @@ func refreshWhileLoading(done <-chan error) {
 				fatalError(err)
 				return
 			}
+			if err := validateLoadedColumns(view.Original()); err != nil {
+				fatalError(err)
+				return
+			}
 			rows, _, _, _ := loadProgress.Snapshot()
 			app.QueueUpdateDraw(func() {
 				// Column widths and types are only knowable once the rows are
@@ -210,6 +217,7 @@ func refreshWhileLoading(done <-chan error) {
 				fileNameStr = buildFileInfoStr()
 
 				row, col := bufferTable.GetSelection()
+				view.SetCursorColumn(view.SourceColumn(col))
 				cursorPosStr = buildCursorPosStr(row, col)
 				updateFooterWithStatus("Loaded " + formatCount(rows) + " rows")
 			})

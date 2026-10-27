@@ -44,8 +44,6 @@ func (args Args) intakeConfig() IntakeConfig {
 		SkipPrefix: args.SkipSymbol,
 		SkipLines:  args.SkipNum,
 		MaxLines:   args.NLine,
-		ShowCols:   args.ShowNum,
-		HideCols:   args.HideNum,
 		Strict:     args.Strict,
 	}
 }

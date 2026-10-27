@@ -118,6 +118,12 @@ func getHelpContent() string {
   [yellow]word1|word2[-]         Match either word (OR)
   [yellow][A-Z]+[-]              Match uppercase letters
 
+[::b][cyan]Column visibility[white]
+  [yellow]c[-]                  Choose visible columns
+  [yellow]x[-]                  Hide the current column
+  In the picker: Space toggles, Enter applies, Esc cancels.
+  Hidden columns keep their values and active filters.
+
 [::b][orange]🔎 Filter[white]
   [yellow]f[-]                   Filter rows by current column value
                     • Apply filters to multiple columns
