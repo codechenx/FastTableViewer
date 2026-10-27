@@ -1058,6 +1058,12 @@ func TestColumnPickerStagesChangesAndKeepsOneVisible(t *testing.T) {
 	}
 	send(tcell.KeyRune, 'c')
 	send(tcell.KeyRune, ' ')
+	send(tcell.KeyRune, 'q')
+	if UI.GetPage("columnPicker") != nil || len(view.VisibleColumns()) != 2 || app.GetFocus() != bufferTable {
+		t.Fatal("q did not cancel the picker and discard staged changes")
+	}
+	send(tcell.KeyRune, 'c')
+	send(tcell.KeyRune, ' ')
 	send(tcell.KeyEnter, 0)
 	if !reflect.DeepEqual(view.VisibleColumns(), []int{1}) || app.GetFocus() != bufferTable {
 		t.Fatalf("apply failed: visible %v", view.VisibleColumns())

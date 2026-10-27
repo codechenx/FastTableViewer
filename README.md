@@ -264,7 +264,7 @@ ftv uses vim-inspired keybindings for intuitive navigation.
 
 ### Column visibility
 
-Press `c` to choose which columns appear in the table. Use the arrow keys or `j` and `k` to move through the list. Press Space to toggle a column, Enter to apply the selection, or Esc to cancel. Press `x` in the table to hide the current column. At least one column must remain visible.
+Press `c` to choose which columns appear in the table. Use the arrow keys or `j` and `k` to move through the list. Press Space to toggle a column or Enter to apply the selection. Press Esc or `q` to cancel. Press `x` in the table to hide the current column. At least one column must remain visible.
 
 The picker shows each column's original number and name. Hidden columns keep their values, data types, and active filters. The footer shows the hidden count, and the picker marks columns with active filters. Search visits visible columns only.
 

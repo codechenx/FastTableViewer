@@ -207,6 +207,9 @@ func showColumnPicker() {
 			return nil
 		case tcell.KeyRune:
 			switch event.Rune() {
+			case 'q':
+				closePicker()
+				return nil
 			case ' ':
 				toggle(list.GetCurrentItem())
 				return nil
@@ -221,7 +224,7 @@ func showColumnPicker() {
 		return event
 	})
 	picker := tview.NewFrame(list).SetBorders(0, 0, 0, 0, 0, 0).
-		AddText("Space toggle · Enter apply · Esc cancel", false, tview.AlignLeft, footerLeftColor)
+		AddText("Space toggle · Enter apply · Esc or q cancel", false, tview.AlignLeft, footerLeftColor)
 	UI.AddPage("columnPicker", picker, true, true)
 	app.SetFocus(list)
 }

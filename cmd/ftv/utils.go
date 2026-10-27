@@ -121,7 +121,7 @@ func getHelpContent() string {
 [::b][cyan]Column visibility[white]
   [yellow]c[-]                  Choose visible columns
   [yellow]x[-]                  Hide the current column
-  In the picker: Space toggles, Enter applies, Esc cancels.
+  In the picker: Space toggles, Enter applies, Esc or q cancels.
   Hidden columns keep their values and active filters.
 
 [::b][orange]🔎 Filter[white]
