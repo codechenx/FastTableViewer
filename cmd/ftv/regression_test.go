@@ -1176,3 +1176,62 @@ func TestColumnNameUsesOneBasedFallbackAndRejectsNegativeIndex(t *testing.T) {
 		t.Fatalf("headerless column name = %q, want Column 1", got)
 	}
 }
+
+func TestRowViewerUsesExistingPalette(t *testing.T) {
+	initView()
+	args.setDefault()
+	buf, err := createNewBufferWithData([][]string{{"Field", "Other"}, {"value", "text"}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view = NewViewState(buf)
+	if err := drawUI(); err != nil {
+		t.Fatal(err)
+	}
+	showRowViewer(1, 0)
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 20)
+	UI.SetRect(0, 0, 80, 20)
+	UI.Draw(screen)
+	reader := app.GetFocus().(*tview.TextView)
+	for _, y := range []int{2, 4} {
+		reader.MouseHandler()(tview.MouseLeftClick, tcell.NewEventMouse(2, y, tcell.Button1, 0), func(p tview.Primitive) { app.SetFocus(p) })
+	}
+	if got := reader.GetHighlights(); !reflect.DeepEqual(got, []string{"field-0"}) {
+		t.Fatalf("mouse click changed the grid-selected field: %v", got)
+	}
+	if consumed, _ := reader.MouseHandler()(tview.MouseScrollDown, tcell.NewEventMouse(2, 2, tcell.WheelDown, 0), func(p tview.Primitive) { app.SetFocus(p) }); !consumed {
+		t.Fatal("palette styling blocked mouse scrolling")
+	}
+	UI.Draw(screen)
+	selected, body := false, false
+	for y := 1; y < 19; y++ {
+		for x := 0; x < 80; x++ {
+			r, _, style, _ := screen.GetContent(x, y)
+			fg, bg, attrs := style.Decompose()
+			if r == 'F' {
+				selected = true
+				if fg != tcell.ColorWhite || bg != tcell.NewRGBColor(80, 120, 160) || attrs&tcell.AttrBold == 0 {
+					t.Fatalf("selected field style = %#v, want table selection colors", style)
+				}
+			}
+			if r == 'v' {
+				body = true
+				if fg != cellTextColor || bg != backdropColor {
+					t.Fatalf("value style = %#v, want table text on dialog background", style)
+				}
+			}
+		}
+	}
+	if !selected || !body {
+		t.Fatal("selected label or value was not rendered")
+	}
+	_, _, border, _ := screen.GetContent(0, 0)
+	if fg, _, _ := border.Decompose(); fg != footerCentreColor {
+		t.Fatal("row viewer border did not use the existing blue accent")
+	}
+}

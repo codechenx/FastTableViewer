@@ -169,7 +169,7 @@ func drawUI() error {
 	bufferTable.Select(0, 0)
 	bufferTable.SetSelectedStyle(tcell.Style{}.
 		Foreground(tcell.ColorWhite).
-		Background(tcell.NewRGBColor(80, 120, 160)). // Darker, muted blue
+		Background(selectedCellBackColor).
 		Attributes(tcell.AttrBold))
 
 	// Size and align the columns from their content.

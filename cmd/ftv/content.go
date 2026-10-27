@@ -8,14 +8,15 @@ import (
 // The table's palette. Kept together so the whole surface can be retuned in
 // one place rather than by hunting literals through the painting code.
 var (
-	cellTextColor   = tcell.NewRGBColor(220, 226, 235)
-	headerTextColor = tcell.NewRGBColor(226, 238, 255)
-	headerBackColor = tcell.NewRGBColor(28, 52, 94)
-	stripeBackColor = tcell.NewRGBColor(24, 28, 36)
-	rowLabelColor   = tcell.NewRGBColor(236, 206, 140)
-	filterMarkColor = tcell.NewRGBColor(236, 148, 56)
-	matchBackColor  = tcell.NewRGBColor(0, 170, 205)
-	otherMatchColor = tcell.NewRGBColor(86, 92, 132)
+	cellTextColor         = tcell.NewRGBColor(220, 226, 235)
+	headerTextColor       = tcell.NewRGBColor(226, 238, 255)
+	headerBackColor       = tcell.NewRGBColor(28, 52, 94)
+	stripeBackColor       = tcell.NewRGBColor(24, 28, 36)
+	rowLabelColor         = tcell.NewRGBColor(236, 206, 140)
+	filterMarkColor       = tcell.NewRGBColor(236, 148, 56)
+	matchBackColor        = tcell.NewRGBColor(0, 170, 205)
+	otherMatchColor       = tcell.NewRGBColor(86, 92, 132)
+	selectedCellBackColor = tcell.NewRGBColor(80, 120, 160)
 )
 
 // bufferContent presents the view's buffer to tview on demand: tview asks for

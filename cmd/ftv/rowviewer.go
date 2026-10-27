@@ -38,14 +38,30 @@ func showRowViewer(row, column int) {
 		SetWrap(true).
 		SetWordWrap(true).
 		SetScrollable(true)
-	reader.SetBorder(true)
+	reader.SetTextStyle(tcell.StyleDefault.Foreground(cellTextColor).Background(backdropColor))
+	reader.SetBorder(true).
+		SetBackgroundColor(backdropColor).
+		SetBorderColor(footerCentreColor).
+		SetTitleColor(headerTextColor)
+	reader.SetMouseCapture(func(action tview.MouseAction, event *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
+		// Keep the grid-selected field highlighted while allowing mouse scrolling.
+		if action == tview.MouseLeftClick {
+			return action, nil
+		}
+		return action, event
+	})
 
 	show := func() {
 		var text strings.Builder
 		for col := 0; col < bufferTable.GetColumnCount(); col++ {
 			field := (bufferContent{}).GetCell(row, col).GetReference().(cellField)
-			fmt.Fprintf(&text, "[\"field-%d\"][::b]%d %s[::-][\"\"]\n%s\n\n",
-				col, field.Column+1, rowViewerText(field.Name), rowViewerText(field.Value))
+			labelStyle := fmt.Sprintf("[#%06x::b]", headerTextColor.Hex())
+			if col == column {
+				// TextView reverses highlighted colors; store the table selection in reverse.
+				labelStyle = fmt.Sprintf("[#%06x:white:b]", selectedCellBackColor.Hex())
+			}
+			fmt.Fprintf(&text, "[\"field-%d\"]%s%d %s[-:-:-][\"\"]\n%s\n\n",
+				col, labelStyle, field.Column+1, rowViewerText(field.Name), rowViewerText(field.Value))
 		}
 		reader.SetText(text.String())
 		reader.SetTitle(fmt.Sprintf(" Row %d/%d · n next · p previous · Esc close ", row-first+1, bufferTable.GetRowCount()-first))
