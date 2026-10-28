@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1233,5 +1234,224 @@ func TestRowViewerUsesExistingPalette(t *testing.T) {
 	_, _, border, _ := screen.GetContent(0, 0)
 	if fg, _, _ := border.Decompose(); fg != footerCentreColor {
 		t.Fatal("row viewer border did not use the existing blue accent")
+	}
+}
+
+func TestColumnVisibilityRetainsInputAndSourceIndices(t *testing.T) {
+	initView()
+	args.setDefault()
+	args.HideNum = []int{2}
+	input := "id,secret,score\n1,hidden token,20\n2,other,10\n"
+	if err := (Intake{Source: pipeSource(strings.NewReader(input)), Config: args.intakeConfig()}).Into(view.Original()); err != nil {
+		t.Fatal(err)
+	}
+	if err := drawUI(); err != nil {
+		t.Fatal(err)
+	}
+	if _, cols := view.Dims(); cols != 3 || bufferTable.GetColumnCount() != 2 {
+		t.Fatalf("source/display widths = %d/%d", cols, bufferTable.GetColumnCount())
+	}
+	if got := view.VisibleColumns(); !reflect.DeepEqual(got, []int{0, 2}) {
+		t.Fatalf("visible source columns = %v", got)
+	}
+	if got := strings.TrimSpace((bufferContent{}).GetCell(1, 1).Text); got != "20" {
+		t.Fatalf("second displayed value = %q", got)
+	}
+	if found := view.Search(MatchSpec{Query: "hidden token"}); found != 0 {
+		t.Fatalf("search returned %d matches in hidden column", found)
+	}
+	view.ClearSearch()
+	bufferTable.Select(1, 1)
+	bufferTable.InputHandler()(tcell.NewEventKey(tcell.KeyRune, 's', 0), func(p tview.Primitive) { app.SetFocus(p) })
+	if got := view.Visible().cont[1][2]; got != "10" {
+		t.Fatalf("sort used wrong source column, first score = %q", got)
+	}
+	bufferTable.InputHandler()(tcell.NewEventKey(tcell.KeyRune, 'W', 0), func(p tview.Primitive) { app.SetFocus(p) })
+	if _, ok := view.ColumnWidth(2); !ok {
+		t.Fatal("width setting did not use original column index")
+	}
+	if _, ok := view.ApplyFilter(1, FilterOptions{Query: "hidden token", Operator: opEquals}); !ok {
+		t.Fatal("filter on hidden source column failed")
+	}
+	if view.DataRows() != 1 || view.FilterCount() != 1 {
+		t.Fatal("hiding changed filter semantics")
+	}
+	if err := view.SetColumnVisibility([]bool{true, true, true}); err != nil {
+		t.Fatal(err)
+	}
+	if view.Visible().cont[1][1] != "hidden token" || view.FilterCount() != 1 {
+		t.Fatal("restoring column lost its value or filter")
+	}
+}
+
+func TestColumnPickerStagesChangesAndKeepsOneVisible(t *testing.T) {
+	initView()
+	args.setDefault()
+	b, err := createNewBufferWithData([][]string{{"id", "name"}, {"1", "Alice"}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view = NewViewState(b)
+	if err := drawUI(); err != nil {
+		t.Fatal(err)
+	}
+	send := func(key tcell.Key, r rune) {
+		app.GetFocus().InputHandler()(tcell.NewEventKey(key, r, 0), func(p tview.Primitive) { app.SetFocus(p) })
+	}
+	app.SetFocus(bufferTable)
+	send(tcell.KeyRune, 'c')
+	send(tcell.KeyRune, ' ')
+	if len(view.VisibleColumns()) != 2 {
+		t.Fatal("picker changed visibility before apply")
+	}
+	send(tcell.KeyEscape, 0)
+	if len(view.VisibleColumns()) != 2 || app.GetFocus() != bufferTable {
+		t.Fatal("cancel changed view or lost focus")
+	}
+	send(tcell.KeyRune, 'c')
+	send(tcell.KeyRune, ' ')
+	send(tcell.KeyRune, 'q')
+	if UI.GetPage("columnPicker") != nil || len(view.VisibleColumns()) != 2 || app.GetFocus() != bufferTable {
+		t.Fatal("q did not cancel the picker and discard staged changes")
+	}
+	send(tcell.KeyRune, 'c')
+	send(tcell.KeyRune, ' ')
+	send(tcell.KeyEnter, 0)
+	if !reflect.DeepEqual(view.VisibleColumns(), []int{1}) || app.GetFocus() != bufferTable {
+		t.Fatalf("apply failed: visible %v", view.VisibleColumns())
+	}
+	send(tcell.KeyRune, 'x')
+	if !reflect.DeepEqual(view.VisibleColumns(), []int{1}) {
+		t.Fatal("last column was hidden")
+	}
+	send(tcell.KeyRune, 'c')
+	send(tcell.KeyRune, ' ')
+	send(tcell.KeyEnter, 0)
+	if _, ok := app.GetFocus().(*tview.List); !ok {
+		t.Fatal("invalid empty selection closed picker")
+	}
+	send(tcell.KeyEscape, 0)
+}
+
+func TestColumnVisibilityCLIValidationAndStreamingGrowth(t *testing.T) {
+	for _, test := range []struct {
+		show, hide []int
+		want       []int
+		invalid    bool
+	}{
+		{nil, nil, []int{0, 1}, false},
+		{[]int{2}, nil, []int{1}, false},
+		{nil, []int{1}, []int{1}, false},
+		{[]int{1}, []int{2}, nil, true},
+		{[]int{0}, nil, nil, true},
+		{nil, []int{3}, []int{0, 1}, false},
+		{nil, []int{1, 2}, []int{}, false},
+	} {
+		b, err := createNewBufferWithData([][]string{{"a", "b"}, {"1", "2"}}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v := NewViewState(b)
+		err = v.ConfigureColumns(test.show, test.hide)
+		if (err != nil) != test.invalid {
+			t.Fatalf("show=%v hide=%v: %v", test.show, test.hide, err)
+		}
+		if test.invalid {
+			continue
+		}
+		if !reflect.DeepEqual(v.VisibleColumns(), test.want) {
+			t.Fatalf("visible = %v, want %v", v.VisibleColumns(), test.want)
+		}
+		if err := b.contAppendSli([]string{"3", "4", "5"}, false); err != nil {
+			t.Fatal(err)
+		}
+		want := append([]int(nil), test.want...)
+		if len(test.show) == 0 && !slices.Contains(test.hide, 3) {
+			want = append(want, 2)
+		}
+		if !reflect.DeepEqual(v.VisibleColumns(), want) {
+			t.Fatalf("grown visible = %v, want %v", v.VisibleColumns(), want)
+		}
+		snapshot := make([]bool, 2)
+		for _, column := range test.want {
+			snapshot[column] = true
+		}
+		if err := v.SetColumnVisibility(snapshot); err != nil {
+			t.Fatalf("picker snapshot after growth: %v", err)
+		}
+		if !reflect.DeepEqual(v.VisibleColumns(), want) {
+			t.Fatalf("picker snapshot changed later columns: %v, want %v", v.VisibleColumns(), want)
+		}
+	}
+}
+
+func TestColumnSelectionWaitsForWiderStreamRows(t *testing.T) {
+	initView()
+	args.setDefault()
+	args.ShowNum = []int{3}
+	args.Sep = ","
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = reader.Close(); _ = writer.Close() })
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	var once sync.Once
+	go func() {
+		done <- (Intake{Source: pipeSource(reader), Config: args.intakeConfig(), OnProgress: func(int, int64, int64) {
+			once.Do(func() { close(ready) })
+		}}).Into(view.Original())
+	}()
+	if _, err := io.WriteString(writer, "a,b\n"+strings.Repeat("1,2\n", 9)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial batch did not load")
+	}
+	if err := drawUI(); err != nil {
+		t.Fatalf("pending column rejected before EOF: %v", err)
+	}
+	if visibleCols() != 0 || buildCursorPosStr(0, 0) != "Waiting for selected columns" {
+		t.Fatal("pending selection did not remain pending")
+	}
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 20)
+	UI.SetRect(0, 0, 80, 20)
+	UI.Draw(screen)
+	if _, err := io.WriteString(writer, "3,4,late\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not complete")
+	}
+	if err := validateLoadedColumns(view.Original()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(view.VisibleColumns(), []int{2}) {
+		t.Fatalf("late column not displayed: %v", view.VisibleColumns())
+	}
+	if got := strings.TrimSpace((bufferContent{}).GetCell(10, 0).Text); got != "late" {
+		t.Fatalf("late value = %q", got)
+	}
+	args.ShowNum = []int{4}
+	if err := validateLoadedColumns(view.Original()); err == nil {
+		t.Fatal("missing column accepted at EOF")
+	}
+	args.ShowNum = nil
+	args.HideNum = []int{1, 2, 3}
+	if err := validateLoadedColumns(view.Original()); err == nil {
+		t.Fatal("all columns hidden at EOF")
 	}
 }

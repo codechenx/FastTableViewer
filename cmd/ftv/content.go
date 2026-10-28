@@ -47,13 +47,14 @@ func (bufferContent) GetRowCount() int {
 
 // GetColumnCount returns the buffer's column count.
 func (bufferContent) GetColumnCount() int {
-	_, cols := view.Dims()
-	return cols
+	return len(view.VisibleColumns())
 }
 
 // GetCell builds the cell at one position, styled for the header, the frozen
 // column, any filter on the column and the current search match.
 func (bufferContent) GetCell(row, column int) *tview.TableCell {
+	displayColumn := column
+	column = view.SourceColumn(column)
 	b := view.Visible()
 
 	b.mu.RLock()
@@ -81,7 +82,7 @@ func (bufferContent) GetCell(row, column int) *tview.TableCell {
 
 	// Check if this is a header row/column (frozen area)
 	isHeaderRow := row < rowFreeze && args.Header != -1 && args.Header != 2
-	isHeaderCol := column < colFreeze
+	isHeaderCol := displayColumn < colFreeze
 
 	// Modern header styling with rich visual design
 	switch {

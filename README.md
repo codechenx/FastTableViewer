@@ -180,8 +180,8 @@ ftv file.vcf --skip-prefix "##"
 | `--lines` | `-n` | Display only first N lines |
 | `--skip-prefix` | | Skip lines starting with prefix (comma-separated) |
 | `--skip-lines` | | Skip first N lines |
-| `--columns` | | Show only specified columns (comma-separated) |
-| `--hide-columns` | | Hide specified columns (comma-separated) |
+| `--columns` | | Initially show only specified columns (comma-separated) |
+| `--hide-columns` | | Initially hide specified columns (comma-separated) |
 | `--freeze` | `-f` | Freeze mode: `-1`=none, `0`=row+col, `1`=row only, `2`=col only |
 | `--strict` | | Strict mode: fail on missing/inconsistent data |
 | `--async` | | Progressive rendering while loading (default: `true`) |
@@ -238,6 +238,8 @@ ftv uses vim-inspired keybindings for intuitive navigation.
 | `Esc` | Clear search highlighting / Close dialogs |
 | `f` | Filter by column |
 | `r` | Remove filter for current column |
+| `c` | Choose visible columns |
+| `x` | Hide the current column |
 | `s` | Sort ascending |
 | `S` | Sort descending |
 | `t` | Toggle column type (String → Number → Date) |
@@ -261,6 +263,14 @@ ftv uses vim-inspired keybindings for intuitive navigation.
 **Note:** Mouse support works in most modern terminals. If your terminal doesn't support mouse events, you can still use keyboard navigation exclusively.
 
 ## Features in Detail
+
+### Column visibility
+
+Press `c` to choose which columns appear in the table. Use the arrow keys or `j` and `k` to move through the list. Press Space to toggle a column or Enter to apply the selection. Press Esc or `q` to cancel. Press `x` in the table to hide the current column. At least one column must remain visible.
+
+The picker shows each column's original number and name. Hidden columns keep their values, data types, and active filters. The footer shows the hidden count, and the picker marks columns with active filters. Search visits visible columns only.
+
+`--columns` and `--hide-columns` set the initial visibility. They affect only the display. ftv keeps all fields in memory, including fields read from a pipe. Use `c` to restore hidden columns without reloading the input.
 
 ### Progressive Loading
 
