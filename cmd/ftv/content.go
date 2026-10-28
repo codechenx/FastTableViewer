@@ -125,7 +125,7 @@ func (bufferContent) GetCell(row, column int) *tview.TableCell {
 	// the tightened columns read as one run of characters.
 	cellText = " " + truncateText(cellText, width) + " "
 
-	return tview.NewTableCell(cellText).
+	return tview.NewTableCell(escapeMarkup(cellText)).
 		SetTextColor(color).
 		SetBackgroundColor(backgroundColor).
 		SetAttributes(attributes).

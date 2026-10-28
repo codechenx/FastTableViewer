@@ -41,11 +41,11 @@ func drawFooter(left, centre, right string) {
 
 	mainPage.Clear()
 	if strip := buildFilterInfoStr(view.CursorColumn()); strip != "" {
-		mainPage.AddText(strip, true, tview.AlignCenter, filterStripColor)
+		mainPage.AddText(escapeMarkup(strip), true, tview.AlignCenter, filterStripColor)
 	}
-	mainPage.AddText(left, false, tview.AlignLeft, footerLeftColor).
-		AddText(centre, false, tview.AlignCenter, footerCentreColor).
-		AddText(right, false, tview.AlignRight, footerRightColor)
+	mainPage.AddText(escapeMarkup(left), false, tview.AlignLeft, footerLeftColor).
+		AddText(escapeMarkup(centre), false, tview.AlignCenter, footerCentreColor).
+		AddText(escapeMarkup(right), false, tview.AlignRight, footerRightColor)
 }
 
 // buildLoadingStatus renders load progress for the footer. A source whose size
@@ -146,7 +146,7 @@ func drawStats(s statsSummary, t *tview.Table) {
 			}
 
 			t.SetCell(r, c,
-				tview.NewTableCell(summaryData[r][c]).
+				tview.NewTableCell(escapeMarkup(summaryData[r][c])).
 					SetTextColor(color).
 					SetBackgroundColor(backgroundColor).
 					SetAlign(tview.AlignLeft))
@@ -894,12 +894,11 @@ func showStatsDialog(statsS statsSummary, columnName string, colType ColumnType)
 		title = fmt.Sprintf(" 📊 Statistics: %s [%s] (Filtered Data - %d filters active) ", columnName, typeName, view.FilterCount())
 	}
 
-	statsTable.SetTitle(title)
+	statsTable.SetTitle(escapeMarkup(title))
 	statsTable.SetTitleAlign(tview.AlignCenter)
 
 	// Create plot view
 	plotView := tview.NewTextView().
-		SetDynamicColors(true).
 		SetText(statsS.getPlot()).
 		SetTextAlign(tview.AlignLeft)
 	plotView.SetBorder(true)

@@ -14,7 +14,7 @@ import (
 func fatalError(err error) {
 	if err != nil {
 		color.Set(color.FgRed)
-		fmt.Println(err)
+		fmt.Printf("%q\n", err.Error())
 		color.Unset()
 		if app != nil {
 			app.Stop()
@@ -54,6 +54,11 @@ func S2F(i string) float64 {
 // I2S covert int to string
 func I2S(i int) string {
 	return strconv.Itoa(i)
+}
+
+// Reset after each opening bracket: tview.Escape misses URL tags with arbitrary bytes.
+func escapeMarkup(text string) string {
+	return strings.ReplaceAll(text, "[", "[[-]")
 }
 
 func getHelpContent() string {
