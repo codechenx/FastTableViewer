@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -981,5 +982,256 @@ func TestTableShowsMarkupAsLiteralData(t *testing.T) {
 				t.Fatalf("rendered %q, want literal %q", got, text)
 			}
 		})
+	}
+}
+
+func TestRowViewerShowsFullValuesAndSelectedField(t *testing.T) {
+	initView()
+	args.setDefault()
+	value := strings.Repeat("long paragraph ", 100) + "complete value\nsecond line"
+	buf, err := createNewBufferWithData([][]string{{"First", "Notes"}, {strings.Repeat("preceding field ", 80), value}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view = NewViewState(buf)
+	if err := drawUI(); err != nil {
+		t.Fatal(err)
+	}
+	bufferTable.Select(1, 1)
+	bufferTable.InputHandler()(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), func(p tview.Primitive) { app.SetFocus(p) })
+	reader, ok := app.GetFocus().(*tview.TextView)
+	if !ok || UI.GetPage("rowViewer") != reader {
+		t.Fatal("Enter did not focus the row viewer")
+	}
+	if !strings.Contains(reader.GetText(true), value) {
+		t.Fatal("row viewer truncated or changed the complete value")
+	}
+	if got := reader.GetHighlights(); !reflect.DeepEqual(got, []string{"field-1"}) {
+		t.Fatalf("highlight = %v, want selected field", got)
+	}
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(40, 10)
+	UI.SetRect(0, 0, 40, 10)
+	UI.Draw(screen)
+	if row, _ := reader.GetScrollOffset(); row == 0 {
+		t.Fatal("row viewer did not scroll past the long preceding field")
+	}
+	reader.InputHandler()(tcell.NewEventKey(tcell.KeyPgDn, 0, tcell.ModNone), func(p tview.Primitive) { app.SetFocus(p) })
+	UI.Draw(screen)
+	if row, _ := reader.GetScrollOffset(); row == 0 {
+		t.Fatal("Page Down did not scroll the wrapped value")
+	}
+	reader.InputHandler()(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone), func(p tview.Primitive) { app.SetFocus(p) })
+	if row, col := bufferTable.GetSelection(); row != 1 || col != 1 || app.GetFocus() != bufferTable || !userMovedCursor {
+		t.Fatalf("viewer did not restore the selected cell: %d,%d", row, col)
+	}
+}
+
+func TestRowViewerNavigatesFilteredAndSortedRecords(t *testing.T) {
+	initView()
+	args.setDefault()
+	buf, err := createNewBufferWithData([][]string{{"Name", "Status"}, {"Charlie", "keep"}, {"Hidden", "drop"}, {"Alice", "keep"}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view = NewViewState(buf)
+	view.ApplyFilter(1, FilterOptions{Query: "keep", Operator: opEquals})
+	view.SortBy(0, false)
+	if err := drawUI(); err != nil {
+		t.Fatal(err)
+	}
+	bufferTable.Select(0, 0)
+	bufferTable.InputHandler()(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), func(p tview.Primitive) { app.SetFocus(p) })
+	reader := app.GetFocus().(*tview.TextView)
+	if !strings.Contains(reader.GetText(true), "Alice") || strings.Contains(reader.GetText(true), "Hidden") {
+		t.Fatal("header selection did not open the first filtered and sorted record")
+	}
+	for _, key := range []rune{'p', 'n', 'n'} {
+		reader.InputHandler()(tcell.NewEventKey(tcell.KeyRune, key, tcell.ModNone), func(p tview.Primitive) { app.SetFocus(p) })
+	}
+	if !strings.Contains(reader.GetText(true), "Charlie") || !strings.Contains(reader.GetTitle(), "2/2") {
+		t.Fatal("next record navigation did not stop at the final visible record")
+	}
+	reader.InputHandler()(tcell.NewEventKey(tcell.KeyRune, 'q', tcell.ModNone), func(p tview.Primitive) { app.SetFocus(p) })
+	if row, _ := bufferTable.GetSelection(); row != 2 {
+		t.Fatalf("closed on row %d, want the inspected row 2", row)
+	}
+}
+
+func TestRowViewerHandlesHeaderlessAndEmptyData(t *testing.T) {
+	for _, header := range []bool{true, false} {
+		initView()
+		args.setDefault()
+		buf, err := createNewBufferWithData([][]string{{"first"}}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		view = NewViewState(buf)
+		if !header {
+			applyFreezeMode(buf, -1)
+		}
+		if err := drawUI(); err != nil {
+			t.Fatal(err)
+		}
+		showRowViewer(0, 0)
+		reader, ok := app.GetFocus().(*tview.TextView)
+		if header && UI.GetPage("rowViewer") != nil {
+			t.Fatal("header-only input opened a row viewer")
+		}
+		if !header && (!ok || !strings.Contains(reader.GetText(true), "Column 1\nfirst")) {
+			t.Fatal("headerless input lost the first row or column label")
+		}
+	}
+	initView()
+	args.setDefault()
+	if err := drawUI(); err != nil {
+		t.Fatal(err)
+	}
+	showRowViewer(0, 0)
+	if UI.GetPage("rowViewer") != nil {
+		t.Fatal("empty data opened a row viewer")
+	}
+}
+
+func TestRowViewerTreatsMarkupAsLiteralData(t *testing.T) {
+	initView()
+	args.setDefault()
+	const payload = "[:::\a\x1b[2J]X"
+	buf, err := createNewBufferWithData([][]string{{payload}, {payload + "[red]literal"}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view = NewViewState(buf)
+	if err := drawUI(); err != nil {
+		t.Fatal(err)
+	}
+	showRowViewer(1, 0)
+	reader := app.GetFocus().(*tview.TextView)
+	if got := reader.GetText(true); !strings.Contains(got, `[:::\a\x1b[2J]X[red]literal`) {
+		t.Fatalf("file data was interpreted as markup: %q", got)
+	}
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 15)
+	UI.SetRect(0, 0, 80, 15)
+	UI.Draw(screen)
+	for y := 0; y < 15; y++ {
+		for x := 0; x < 80; x++ {
+			_, _, style, _ := screen.GetContent(x, y)
+			if style != style.Url("") {
+				t.Fatalf("file data set a hyperlink at %d,%d", x, y)
+			}
+		}
+	}
+}
+
+func TestRowViewerShowsControlBytesWithoutChangingStoredValues(t *testing.T) {
+	initView()
+	args.setDefault()
+	const name = "Name\x00\x1b"
+	const value = "first\a\b\f\r\v\x00\x1b\u0085\u009b\nsecond\tfield"
+	buf, err := createNewBufferWithData([][]string{{name}, {value}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view = NewViewState(buf)
+	if err := drawUI(); err != nil {
+		t.Fatal(err)
+	}
+	showRowViewer(1, 0)
+	reader := app.GetFocus().(*tview.TextView)
+	want := "1 Name\\x00\\x1b\nfirst\\a\\b\\f\\r\\v\\x00\\x1b\\u0085\\u009b\nsecond\tfield\n\n"
+	if got := reader.GetText(true); got != want {
+		t.Fatalf("readable record = %q, want %q", got, want)
+	}
+	for _, r := range reader.GetText(false) {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			t.Fatalf("raw control rune %q reached the text view", r)
+		}
+	}
+	field := (bufferContent{}).GetCell(1, 0).GetReference().(cellField)
+	if field.Name != name || field.Value != value || buf.cont[1][0] != value {
+		t.Fatal("displaying control bytes changed the original field")
+	}
+}
+
+func TestColumnNameUsesOneBasedFallbackAndRejectsNegativeIndex(t *testing.T) {
+	b, err := createNewBufferWithData([][]string{{"Name"}, {"Alice"}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := NewViewState(b)
+	if got := v.ColumnName(-1); got != "" {
+		t.Fatalf("negative column name = %q, want empty", got)
+	}
+	applyFreezeMode(b, -1)
+	if got := v.ColumnName(0); got != "Column 1" {
+		t.Fatalf("headerless column name = %q, want Column 1", got)
+	}
+}
+
+func TestRowViewerUsesExistingPalette(t *testing.T) {
+	initView()
+	args.setDefault()
+	buf, err := createNewBufferWithData([][]string{{"Field", "Other"}, {"value", "text"}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view = NewViewState(buf)
+	if err := drawUI(); err != nil {
+		t.Fatal(err)
+	}
+	showRowViewer(1, 0)
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 20)
+	UI.SetRect(0, 0, 80, 20)
+	UI.Draw(screen)
+	reader := app.GetFocus().(*tview.TextView)
+	for _, y := range []int{2, 4} {
+		reader.MouseHandler()(tview.MouseLeftClick, tcell.NewEventMouse(2, y, tcell.Button1, 0), func(p tview.Primitive) { app.SetFocus(p) })
+	}
+	if got := reader.GetHighlights(); !reflect.DeepEqual(got, []string{"field-0"}) {
+		t.Fatalf("mouse click changed the grid-selected field: %v", got)
+	}
+	if consumed, _ := reader.MouseHandler()(tview.MouseScrollDown, tcell.NewEventMouse(2, 2, tcell.WheelDown, 0), func(p tview.Primitive) { app.SetFocus(p) }); !consumed {
+		t.Fatal("palette styling blocked mouse scrolling")
+	}
+	UI.Draw(screen)
+	selected, body := false, false
+	for y := 1; y < 19; y++ {
+		for x := 0; x < 80; x++ {
+			r, _, style, _ := screen.GetContent(x, y)
+			fg, bg, attrs := style.Decompose()
+			if r == 'F' {
+				selected = true
+				if fg != tcell.ColorWhite || bg != tcell.NewRGBColor(80, 120, 160) || attrs&tcell.AttrBold == 0 {
+					t.Fatalf("selected field style = %#v, want table selection colors", style)
+				}
+			}
+			if r == 'v' {
+				body = true
+				if fg != cellTextColor || bg != backdropColor {
+					t.Fatalf("value style = %#v, want table text on dialog background", style)
+				}
+			}
+		}
+	}
+	if !selected || !body {
+		t.Fatal("selected label or value was not rendered")
+	}
+	_, _, border, _ := screen.GetContent(0, 0)
+	if fg, _, _ := border.Decompose(); fg != footerCentreColor {
+		t.Fatal("row viewer border did not use the existing blue accent")
 	}
 }

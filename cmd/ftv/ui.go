@@ -169,7 +169,7 @@ func drawUI() error {
 	bufferTable.Select(0, 0)
 	bufferTable.SetSelectedStyle(tcell.Style{}.
 		Foreground(tcell.ColorWhite).
-		Background(tcell.NewRGBColor(80, 120, 160)). // Darker, muted blue
+		Background(selectedCellBackColor).
 		Attributes(tcell.AttrBold))
 
 	// Size and align the columns from their content.
@@ -209,6 +209,11 @@ func drawUI() error {
 
 	//bufferTable HotKey Event
 	bufferTable.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEnter {
+			row, column := bufferTable.GetSelection()
+			showRowViewer(row, column)
+			return nil
+		}
 		// Mark that user is interacting with cursor movement keys
 		if event.Key() == tcell.KeyUp || event.Key() == tcell.KeyDown ||
 			event.Key() == tcell.KeyLeft || event.Key() == tcell.KeyRight ||

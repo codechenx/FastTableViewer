@@ -33,7 +33,8 @@
   - [Statistics and Visualization](#statistics-and-visualization)
   - [Search](#search)
   - [Column Filter](#column-filter)
-  - [Text Wrapping](#text-wrapping)
+  - [Column width](#column-width)
+  - [Row viewer](#row-viewer)
 - [Filter Operators Guide](FILTER_OPERATORS.md)
 - [Advanced Examples](#advanced-examples)
   - [Biological Data Formats](#biological-data-formats)
@@ -49,7 +50,7 @@ ftv brings spreadsheet-like functionality to your terminal with vim-inspired con
 - **Powerful search** - Find text across all cells with highlighting and regex pattern matching support
 - **Advanced filtering** - Filter rows with complex regex queries
 - **Flexible sorting** - Sort by any column with intelligent type detection
-- **Text wrapping** - Wrap long cell content for better readability
+- **Row viewer** - Read complete records with wrapped values
 - **Statistics & plots** - View column statistics with visual distribution charts
 - **Vim keybindings** - Navigate naturally with h/j/k/l and more
 - **Mouse support** - Click to select cells, scroll with mouse wheel, interact with dialogs
@@ -240,8 +241,9 @@ ftv uses vim-inspired keybindings for intuitive navigation.
 | `s` | Sort ascending |
 | `S` | Sort descending |
 | `t` | Toggle column type (String → Number → Date) |
-| `W` | Toggle text wrapping |
+| `W` | Toggle the current column's width limit |
 | `i` | Show column statistics |
+| `Enter` | Read the full row with wrapped values |
 | `?` | Show help |
 | `Esc` | Close dialogs / clear search |
 | `q` | Quit |
@@ -462,19 +464,21 @@ Navigate to filtered column → Press r
 - Press `r` to clear the filter and return to normal view
 
 
-### Text Wrapping
+### Column width
 
-Handle long cell content without horizontal scrolling.
+The table displays one line per record and truncates long values. `W` toggles a 50-character width limit for the current column. It does not wrap text or expand the column beyond its measured width.
 
-**How to wrap:**
-- Press `W` (capital W) on any column to toggle wrapping
-- First press: wraps at 25 characters with smart word breaks
-- Second press: unwraps back to single line
+Press `Enter` to read complete values in the row viewer.
 
-**Smart wrapping:**
-- Breaks at spaces and hyphens when possible
-- Each column can be wrapped independently
-- Useful for comments, descriptions, URLs
+### Row viewer
+
+Select a cell and press `Enter` to read the record's complete values. The viewer opens at the selected field and wraps text to the terminal width. It preserves line breaks and does not truncate values.
+
+Control characters other than line feeds and tabs appear as escape sequences, such as `\a` and `\x1b`. The stored values remain unchanged.
+
+Use `j` and `k`, the arrow keys, or Page Up and Page Down to scroll. Press `n` for the next record or `p` for the previous record in the current filtered and sorted order. Press `Esc` or `q` to return to that record in the table.
+
+If you open the viewer from a header, it starts at the first data record. With no header, the fields are named `Column 1`, `Column 2`, and so on.
 
 ## Advanced Examples
 
@@ -564,7 +568,7 @@ ftv data.txt -s "  "
 - **Large files?** Let async loading work its magic - the UI appears instantly
 - **Can't find data?** Use `/` to search across all cells
 - **Too many columns?** Use `--columns` to show only what you need
-- **Long text?** Press `W` to wrap the current column
+- **Long text?** Press `Enter` to read the complete record
 - **Wrong sort order?** Press `t` to change the column type, then `s` to re-sort
 - **Complex filtering?** Use `OR` for alternatives, `AND` for requirements, `ROR` to combine results
 - **Need insights?** Press `i` for comprehensive statistics with visual plots - histograms for numeric data, frequency charts for categorical data

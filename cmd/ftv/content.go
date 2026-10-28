@@ -8,14 +8,15 @@ import (
 // The table's palette. Kept together so the whole surface can be retuned in
 // one place rather than by hunting literals through the painting code.
 var (
-	cellTextColor   = tcell.NewRGBColor(220, 226, 235)
-	headerTextColor = tcell.NewRGBColor(226, 238, 255)
-	headerBackColor = tcell.NewRGBColor(28, 52, 94)
-	stripeBackColor = tcell.NewRGBColor(24, 28, 36)
-	rowLabelColor   = tcell.NewRGBColor(236, 206, 140)
-	filterMarkColor = tcell.NewRGBColor(236, 148, 56)
-	matchBackColor  = tcell.NewRGBColor(0, 170, 205)
-	otherMatchColor = tcell.NewRGBColor(86, 92, 132)
+	cellTextColor         = tcell.NewRGBColor(220, 226, 235)
+	headerTextColor       = tcell.NewRGBColor(226, 238, 255)
+	headerBackColor       = tcell.NewRGBColor(28, 52, 94)
+	stripeBackColor       = tcell.NewRGBColor(24, 28, 36)
+	rowLabelColor         = tcell.NewRGBColor(236, 206, 140)
+	filterMarkColor       = tcell.NewRGBColor(236, 148, 56)
+	matchBackColor        = tcell.NewRGBColor(0, 170, 205)
+	otherMatchColor       = tcell.NewRGBColor(86, 92, 132)
+	selectedCellBackColor = tcell.NewRGBColor(80, 120, 160)
 )
 
 // bufferContent presents the view's buffer to tview on demand: tview asks for
@@ -29,6 +30,12 @@ var (
 // both costs proportional to the visible area instead.
 type bufferContent struct {
 	tview.TableContentReadOnly
+}
+
+type cellField struct {
+	Column int
+	Name   string
+	Value  string
 }
 
 // GetRowCount returns the number of rows currently in the buffer, which grows
@@ -60,6 +67,7 @@ func (bufferContent) GetCell(row, column int) *tview.TableCell {
 	}
 	rowFreeze, colFreeze := b.rowFreeze, b.colFreeze
 	b.mu.RUnlock()
+	field := cellField{Column: column, Name: view.ColumnName(column), Value: cellText}
 
 	layout := view.Layout(column)
 
@@ -126,6 +134,7 @@ func (bufferContent) GetCell(row, column int) *tview.TableCell {
 	cellText = " " + truncateText(cellText, width) + " "
 
 	return tview.NewTableCell(escapeMarkup(cellText)).
+		SetReference(field).
 		SetTextColor(color).
 		SetBackgroundColor(backgroundColor).
 		SetAttributes(attributes).
