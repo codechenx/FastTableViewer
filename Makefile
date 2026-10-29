@@ -71,7 +71,7 @@ version:
 	@echo "Updating version to $(VERSION)..."
 	@sed -i "" "s/version: '.*'/version: '$(VERSION)'/g" snap/snapcraft.yaml
 	@sed -i "" -E "s#/releases/download/v[0-9][^/]*/FastTableViewer_[0-9][^_]*_#/releases/download/v$(VERSION)/FastTableViewer_$(VERSION)_#g" README.md
-	@sed -i "" "s/Version: \".*\"/Version: \"$(VERSION)\"/g" cmd/ftv/ftv.go
+	@sed -i "" -E "s/(Version:[[:space:]]*)\"[^\"]*\"/\1\"$(VERSION)\"/g" cmd/ftv/ftv.go
 	@sed -i "" "s/pkgver=.*/pkgver=$(VERSION)/g" PKGBUILD
 
 ## help: Show this help message
